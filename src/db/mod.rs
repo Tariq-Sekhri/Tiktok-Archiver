@@ -16,18 +16,23 @@ use anyhow::Result;
 use crate::discover::first_discovery;
 
 pub fn state_dir() -> PathBuf {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let from_manifest = manifest_dir.join("state");
-    if !from_manifest.exists() {
-        if let Err(e) = fs::create_dir_all(&from_manifest) {
+    let base_dir = if cfg!(debug_assertions) {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    } else {
+        let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+        exe.parent().unwrap_or_else(|| Path::new(".")).to_path_buf()
+    };
+    let state_dir = base_dir.join("state");
+    if !state_dir.exists() {
+        if let Err(e) = fs::create_dir_all(&state_dir) {
             print_how_to_use_and_exit(&format!(
                 "Failed to create state directory {}: {}",
-                from_manifest.display(),
+                state_dir.display(),
                 e
             ));
         }
     }
-    from_manifest
+    state_dir
 }
 
 pub fn ensure_file(path: &PathBuf, default_contents: &str) -> Result<()> {

@@ -27,8 +27,14 @@ pub fn save_config(config:&Config)->Result<()>{
 }
 
 fn config_file() -> Result<PathBuf> {
-    let exe = env::current_exe()?;
-    let dir = exe.parent().unwrap_or_else(|| Path::new("."));
+    let dir = if cfg!(debug_assertions) {
+        env::var("CARGO_MANIFEST_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+    } else {
+        let exe = env::current_exe()?;
+        exe.parent().unwrap_or_else(|| Path::new(".")).to_path_buf()
+    };
     let path = dir.join("config.yaml");
     ensure_file(&path, "accounts:\n# - username1\npython_path: \ndownload_dir: downloads\n")?;
     Ok(path)

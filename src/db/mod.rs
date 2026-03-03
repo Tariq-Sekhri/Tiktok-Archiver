@@ -90,6 +90,11 @@ async fn config_and_accounts_sync(config: &mut Config) {
     }
     let state_names: HashSet<String> = accounts.iter().map(|a| a.name.clone()).collect();
     if config_all_names != state_names {
+        println!(
+            "[sync] starting reconciliation: config_all_names={:?}, state_names={:?}",
+            config_all_names, state_names
+        );
+
         let config_only_tracked: Vec<String> = config_tracked_names
             .iter()
             .filter(|name| !state_names.contains(*name))
@@ -111,9 +116,11 @@ async fn config_and_accounts_sync(config: &mut Config) {
         log(Event::new(msg, LogLevel::Info));
 
         for name in config_only_tracked {
+            println!("[sync] first_discovery start for @{}", name);
             if let Err(e) = first_discovery(name.clone()).await {
                 print_how_to_use_and_exit(&format!("First discovery failed for @{}: {}", name, e));
             }
+            println!("[sync] first_discovery done for @{}", name);
         }
 
         let mut config_updated = false;
@@ -128,7 +135,10 @@ async fn config_and_accounts_sync(config: &mut Config) {
             if let Err(e) = save_config(config) {
                 print_how_to_use_and_exit(&format!("Failed to save config.yaml during reconciliation: {}", e));
             }
+            println!("[sync] reconciliation updated config.yaml");
         }
+
+        println!("[sync] reconciliation finished");
     }
 }
 

@@ -1,0 +1,165 @@
+pub mod seen_video;
+pub mod account;
+pub mod browser;
+pub mod logger;
+pub mod config;
+
+use std::{fs, path::{PathBuf, Path}};
+use std::collections::HashSet;
+use crate::{print_how_to_use_and_exit, RunMode};
+use crate::db::browser::cookies_have_any;
+use crate::db::seen_video::seen_videos_file;
+use crate::db::config::{load_config, save_config, account_name, is_tracked, Config};
+use crate::db::account::{account_file, load_accounts};
+use crate::db::logger::{log, Event, LogLevel};
+use anyhow::Result;
+use crate::discover::first_discovery;
+
+pub fn state_dir() -> PathBuf {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let from_manifest = manifest_dir.join("state");
+    if !from_manifest.exists() {
+        if let Err(e) = fs::create_dir_all(&from_manifest) {
+            print_how_to_use_and_exit(&format!(
+                "Failed to create state directory {}: {}",
+                from_manifest.display(),
+                e
+            ));
+        }
+    }
+    from_manifest
+}
+
+pub fn ensure_file(path: &PathBuf, default_contents: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if path.exists() {
+        if fs::metadata(path)?.len() == 0 {
+            fs::write(path, default_contents)?;
+        }
+        return Ok(());
+    }
+    fs::write(path, default_contents)?;
+    Ok(())
+}
+
+
+pub async fn check_state(mode: &RunMode) {
+    let (cookies_path, mut config) = general_check();
+
+    match mode {
+        RunMode::Login => {}
+        RunMode::Default => {
+            if !cookies_path.exists() {
+                print_how_to_use_and_exit("Missing `state/saved_cookies.json` (cookies not saved yet).");
+            }
+
+            if !cookies_have_any(&cookies_path) {
+                print_how_to_use_and_exit("`state/saved_cookies.json` has no cookies (or invalid JSON). Run `cargo run login` first.");
+            }
+            config_and_accounts_sync(&mut config).await;
+
+        }
+    }
+}
+
+async fn config_and_accounts_sync(config: &mut Config) {
+    let accounts = match load_accounts() {
+        Ok(a) => a,
+        Err(e) => {
+            print_how_to_use_and_exit(&format!("Failed to load accounts.json: {}", e));
+        }
+    };
+
+    let mut config_all_names: HashSet<String> = HashSet::new();
+    let mut config_tracked_names: HashSet<String> = HashSet::new();
+
+
+    for account in &config.accounts {
+        let name = account_name(account).to_string();
+        config_all_names.insert(name.clone());
+        if is_tracked(account) {
+            config_tracked_names.insert(name);
+        }
+    }
+    let state_names: HashSet<String> = accounts.iter().map(|a| a.name.clone()).collect();
+    if config_all_names != state_names {
+        let config_only_tracked: Vec<String> = config_tracked_names
+            .iter()
+            .filter(|name| !state_names.contains(*name))
+            .cloned()
+            .collect();
+
+
+        let state_only: Vec<String> = state_names
+            .iter()
+            .filter(|name| !config_all_names.contains(*name))
+            .cloned()
+            .collect();
+
+
+        let msg = format!(
+            "Pre-Reconciling accounts: config_all_names={:?}, state_names={:?}, config_only_tracked={:?}, state_only={:?}",
+            config_all_names, state_names, config_only_tracked, state_only
+        );
+        log(Event::new(msg, LogLevel::Info));
+
+        for name in config_only_tracked {
+            if let Err(e) = first_discovery(name.clone()).await {
+                print_how_to_use_and_exit(&format!("First discovery failed for @{}: {}", name, e));
+            }
+        }
+
+        let mut config_updated = false;
+        for name in state_only {
+            if !config_all_names.contains(&name) {
+                config.accounts.push(format!("{}:false", name));
+                config_updated = true;
+            }
+        }
+
+        if config_updated {
+            if let Err(e) = save_config(config) {
+                print_how_to_use_and_exit(&format!("Failed to save config.yaml during reconciliation: {}", e));
+            }
+        }
+    }
+}
+
+fn general_check() -> (PathBuf, Config) {
+    let state_dir = state_dir();
+
+    if let Err(e) = seen_videos_file() {
+        print_how_to_use_and_exit(&format!("Failed to init seen_videos.json: {}", e));
+    }
+    if let Err(e) = account_file() {
+        print_how_to_use_and_exit(&format!("Failed to init accounts.json: {}", e));
+    }
+
+    let cookies_path = state_dir.join("saved_cookies.json");
+    if let Err(e) = ensure_file(&cookies_path, "{\n  \"cookies\": []\n}\n") {
+        print_how_to_use_and_exit(&format!("Failed to init saved_cookies.json: {}", e));
+    }
+    let config = match load_config() {
+        Ok(c) => c,
+        Err(e) => {
+            print_how_to_use_and_exit(&format!("Failed to load config.yaml: {}", e));
+        }
+    };
+
+
+    if config.python_path.trim().is_empty() {
+        print_how_to_use_and_exit("Missing `python_path` in config.yaml.");
+    }
+
+    if !Path::new(&config.python_path).exists() {
+        let msg = format!("`python_path` does not exist: {}", config.python_path);
+        print_how_to_use_and_exit(&msg);
+    }
+
+    if config.accounts.iter().all(|a| a.trim().is_empty()) {
+        print_how_to_use_and_exit("No accounts configured in config.yaml. Add at least one username under `accounts:`.");
+    }
+    (cookies_path, config)
+}

@@ -6,6 +6,7 @@ use crate::db::seen_video::{load_all_seen_videos,  update_download_status, Downl
 use anyhow::Result;
 use crate::db::config::load_config;
 use crate::db::logger::{log, Event, LogLevel};
+use crate::db::seen_video::DownloadStatus::DownloadFailed;
 
 pub const VIDEO_EXT: &str = "mp4";
 
@@ -47,11 +48,10 @@ fn download_videos(vids:Vec<SeenVideo>)->Result<()>{
 }
 
 pub fn download_pending()->Result<()>{
-    let vids:Vec<SeenVideo> = load_all_seen_videos()?.into_values().flatten().filter(|vid| vid.download_status == DownloadStatus::NotDownloaded).collect();
+    let vids:Vec<SeenVideo> = load_all_seen_videos()?.into_values().flatten().filter(|vid| vid.download_status == DownloadStatus::NotDownloaded || vid.download_status== DownloadFailed).collect();
     download_videos(vids)?;
     Ok(())
 }
-
 
 fn download_video(vid: &SeenVideo) -> Result<()> {
     let path = video_file_path(&vid.username, vid.video_id)?;
@@ -72,7 +72,6 @@ fn download_video(vid: &SeenVideo) -> Result<()> {
     cmd.arg("--add-header")
         .arg(format!("Cookie:{}", cookie_header));
     cmd.arg(&vid.url);
-
 
     let output = cmd
         .output()

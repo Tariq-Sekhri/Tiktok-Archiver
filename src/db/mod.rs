@@ -5,15 +5,20 @@ pub mod logger;
 pub mod config;
 
 use std::{fs, path::{PathBuf, Path}};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::process::Command;
+use std::sync::OnceLock;
 use crate::{print_how_to_use_and_exit, RunMode};
 use crate::db::browser::cookies_have_any;
-use crate::db::seen_video::seen_videos_file;
+use crate::db::seen_video::{append_seen_videos, save_all_seen_videos, seen_videos_file};
 use crate::db::config::{load_config, save_config, account_name, is_tracked, Config};
-use crate::db::account::{account_file, load_accounts};
+use crate::db::account::{account_file, add_account, load_accounts};
 use crate::db::logger::{log, Event, LogLevel};
 use anyhow::Result;
+use anyhow::anyhow;
 use crate::discover::first_discovery;
+
+static YT_DLP_READY: OnceLock<()> = OnceLock::new();
 
 pub fn state_dir() -> PathBuf {
     let base_dir = if cfg!(debug_assertions) {
@@ -62,6 +67,9 @@ pub async fn check_state(mode: &RunMode) {
 
             if !cookies_have_any(&cookies_path) {
                 print_how_to_use_and_exit("`state/saved_cookies.json` has no cookies (or invalid JSON). Run `cargo run login` first.");
+            }
+            if let Err(e) = ensure_yt_dlp(&config.python_path) {
+                print_how_to_use_and_exit(&format!("yt-dlp check/install failed: {}", e));
             }
             config_and_accounts_sync(&mut config).await;
 
@@ -117,11 +125,25 @@ async fn config_and_accounts_sync(config: &mut Config) {
 
         for name in config_only_tracked {
             println!("[sync] first_discovery start for @{}", name);
-            if let Err(e) = first_discovery(name.clone()).await {
-                print_how_to_use_and_exit(&format!("First discovery failed for @{}: {}", name, e));
+            match first_discovery(name.clone()).await {
+                Ok((acc,vids))=>{
+                    if let Err(_) = append_seen_videos(&acc.name.to_string(), &vids){
+                        println!("Error Appending");
+                        if let Err(e) = save_all_seen_videos(&HashMap::from([(acc.name.clone(), vids.clone())])) {
+                            print_how_to_use_and_exit(&format!("Failed to save seen videos: {}", e));
+                        }
+                    };
+                    if let Err(e) = add_account(&acc) {
+                        print_how_to_use_and_exit(&format!("Failed to add account: {}", e));
+                    }
+                    println!("Added Account: {:?}", acc);
+                }
+                Err(e)=>{print_how_to_use_and_exit(&format!("First discovery failed for @{}: {}", name, e)); }
             }
             println!("[sync] first_discovery done for @{}", name);
         }
+
+
 
         let mut config_updated = false;
         for name in state_only {
@@ -177,4 +199,53 @@ fn general_check() -> (PathBuf, Config) {
         print_how_to_use_and_exit("No accounts configured in config.yaml. Add at least one username under `accounts:`.");
     }
     (cookies_path, config)
+}
+
+fn ensure_yt_dlp(python: &str) -> Result<()> {
+    if YT_DLP_READY.get().is_some() {
+        return Ok(());
+    }
+
+    let check = Command::new(python)
+        .arg("-m")
+        .arg("yt_dlp")
+        .arg("--version")
+        .output();
+
+    let ready = match check {
+        Ok(out) => out.status.success(),
+        Err(_) => false,
+    };
+
+    if !ready {
+        let install = Command::new(python)
+            .arg("-m")
+            .arg("pip")
+            .arg("install")
+            .arg("-U")
+            .arg("yt-dlp")
+            .output()
+            .map_err(|e| anyhow!(format!("Failed to execute pip via python: {}", e)))?;
+
+        if !install.status.success() {
+            let err = String::from_utf8_lossy(&install.stderr);
+            let out = String::from_utf8_lossy(&install.stdout);
+            return Err(anyhow!(format!("pip install yt-dlp failed: {}\n{}", err, out)));
+        }
+
+        let verify = Command::new(python)
+            .arg("-m")
+            .arg("yt_dlp")
+            .arg("--version")
+            .output()
+            .map_err(|e| anyhow!(format!("Failed to execute python: {}", e)))?;
+
+        if !verify.status.success() {
+            let err = String::from_utf8_lossy(&verify.stderr);
+            return Err(anyhow!(format!("yt-dlp still not usable after install: {}", err)));
+        }
+    }
+
+    let _ = YT_DLP_READY.set(());
+    Ok(())
 }

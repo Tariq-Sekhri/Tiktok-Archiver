@@ -24,8 +24,8 @@ fn parse_rehydration(html: &str) -> Option<Value> {
 pub async fn get_new_count(username: &str) -> Result<i64> {
     let html = &fetch_html(username).await?;
     let data = parse_rehydration(html)
-        .ok_or_else(|| anyhow::anyhow!("Failed to parse rehydration: html dump({})", html))?;
-        // .ok_or_else(|| anyhow::anyhow!("Failed to parse rehydration" ))?;
+        // .ok_or_else(|| anyhow::anyhow!("Failed to parse rehydration: html dump({})", html))?;
+        .ok_or_else(|| anyhow::anyhow!("Failed to parse rehydration" ))?;
     let video_count = data
         .pointer("/__DEFAULT_SCOPE__/webapp.user-detail/userInfo/stats/videoCount")
         .ok_or_else(|| anyhow::anyhow!("Error getting video count"))?;

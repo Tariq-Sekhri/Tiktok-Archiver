@@ -11,7 +11,7 @@ use crate::db::seen_video::{append_seen_videos, save_all_seen_videos, SeenVideo}
 
 const WAIT_AFTER_LOAD_S: u64 = 2;
 
-pub async fn first_discovery(username:String) -> Result<()> {
+pub async fn first_discovery(username:String) -> Result<(Account, Vec<SeenVideo>)> {
     let session = launch_browser(&format!("https://www.tiktok.com/@{}", &username), CookiesMode::Persistent, true)?;
     scroll_to_bottom(&session)?;
     let html = session.tab.get_content().context("get_content")?;
@@ -20,10 +20,7 @@ pub async fn first_discovery(username:String) -> Result<()> {
     if new_vids.is_empty() {
         return Err(anyhow::anyhow!("No new video"));
     }
-    if let Err(_) = append_seen_videos(&username.to_string(), &new_vids){
-        println!("error getting but thats fine ");
-        save_all_seen_videos(&HashMap::from([(username.to_string(), new_vids.clone())]))?;
-    };
+
     let count: i64;
     loop {
         match get_new_count(&username).await {
@@ -46,10 +43,9 @@ pub async fn first_discovery(username:String) -> Result<()> {
         count,
         count - new_vids.len() as i64
     );
-    add_account(&acc)?;
-    println!("Added Account: {:?}", acc);
 
-    Ok(())
+
+    Ok((acc, new_vids))
 }
 
 

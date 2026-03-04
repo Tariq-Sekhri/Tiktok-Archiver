@@ -176,10 +176,7 @@ fn reconcile_account_state(account: &Account, new_count: i64, unavailable: i64) 
 
     let diff = new_count + unavailable - total_seen_videos_count;
 
-    println!(
-        "[reconcile] {}: count_now={}, unavailable={}, total_seen={}, diff={}",
-        account.name, new_count, unavailable, total_seen_videos_count, diff
-    );
+
 
 
     if diff < 0 {

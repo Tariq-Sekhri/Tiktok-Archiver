@@ -181,7 +181,7 @@ pub fn launch_browser(url: &str, mode: CookiesMode, headless:bool) -> Result<Bro
     };
 
     let mut builder = browser::LaunchOptionsBuilder::default();
-    builder.headless(false);
+    builder.headless(headless);
     builder.window_size(Some((1920, 1080)));
     builder.idle_browser_timeout(Duration::from_secs(3600));
     builder.user_data_dir(profile_dir);

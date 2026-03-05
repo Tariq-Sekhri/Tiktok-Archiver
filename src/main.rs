@@ -139,7 +139,9 @@ async fn default_loop() {
             };
 
             if !new_videos.is_empty() {
-
+                for vid in &new_videos{
+                    log(Event::new(format!("{} new video: {} at {}", &account.name, vid.video_id, &vid.url), LogLevel::Info ));
+                }
                 if let Err(e) = append_seen_videos(&account.name, &new_videos) {
                     let msg = format!("{}: append_seen_videos failed: {}", account.name, e);
                     log(Event::new(msg, LogLevel::CriticalFail));

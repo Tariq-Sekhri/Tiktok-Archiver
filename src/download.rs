@@ -24,24 +24,22 @@ fn have_video_on_disk(vid: &SeenVideo) -> Result<bool> {
 fn download_videos(vids:Vec<SeenVideo>)->Result<()>{
     for vid in vids {
         if have_video_on_disk(&vid).unwrap_or(false) {
-            println!("had {} on disk", vid.video_id);
+            log(Event::new(format!("had {} on disk", vid.video_id), LogLevel::Info));
             update_download_status(&vid.username, vid.video_id, DownloadStatus::Downloaded)?;
             continue;
         }
         if !vid.source_available || vid.download_status == DownloadStatus::Downloaded {
-            println!("Video Unavailable:{}", vid.video_id);
+            log(Event::new(format!("Video Unavailable:{}", vid.video_id), LogLevel::Info));
             continue;
         }
 
         println!("Downloding:{}", vid.video_id);
         if let Err(e) = download_video(&vid) {
-            let msg = format!("Error Downloading vid:{:?}:({})", vid, e);
             update_download_status(&vid.username, vid.video_id, DownloadStatus::DownloadFailed)?;
-            eprintln!("{}", msg);
-            log(Event::new(msg, LogLevel::Error));
+            log(Event::new(format!("Error Downloading vid:{:?}:({})", vid, e), LogLevel::Error));
             continue;
         };
-
+        log(Event::new(format!("Downloaded vid:{:?}:", vid), LogLevel::Info));
         update_download_status(&vid.username, vid.video_id, DownloadStatus::Downloaded)?;
     }
     Ok(())

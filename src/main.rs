@@ -69,7 +69,6 @@ async fn default_loop() {
     loop {
         let Ok(accounts) = load_tracked_accounts() else {
             log(Event::new("Failed to load accounts".to_string(), LogLevel::CriticalFail));
-            eprintln!("load accounts failed");
             continue;
         };
 
@@ -78,7 +77,9 @@ async fn default_loop() {
                 Ok(n) => n,
                 Err(e) => {
                     let msg = format!("{}: get_new_count failed: {}", account.name, e);
-                    log(Event::new(msg.clone(), LogLevel::Error));
+                    // disable log for this, fails too often, also dont care too much if it fails
+                    // eprintln!("{}", msg);
+                    // log(Event::new(msg.clone(), LogLevel::Error));
                     continue;
                 }
             };

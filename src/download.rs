@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 use std::process::Command;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use anyhow::anyhow;
 use crate::db::browser::load_cookie_params;
 use crate::db::seen_video::{load_all_seen_videos,  update_download_status, DownloadStatus, SeenVideo};
@@ -70,6 +72,8 @@ fn download_video(vid: &SeenVideo) -> Result<()> {
     cmd.arg("--add-header")
         .arg(format!("Cookie:{}", cookie_header));
     cmd.arg(&vid.url);
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000);
 
     let output = cmd
         .output()

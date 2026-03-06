@@ -7,6 +7,8 @@ pub mod config;
 use std::{fs, path::{PathBuf, Path}};
 use std::collections::{HashMap, HashSet};
 use std::process::Command;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::sync::OnceLock;
 use crate::{print_how_to_use_and_exit, RunMode};
 use crate::db::browser::cookies_have_any;
@@ -206,11 +208,11 @@ fn ensure_yt_dlp(python: &str) -> Result<()> {
         return Ok(());
     }
 
-    let check = Command::new(python)
-        .arg("-m")
-        .arg("yt_dlp")
-        .arg("--version")
-        .output();
+    let mut check_cmd = Command::new(python);
+    check_cmd.arg("-m").arg("yt_dlp").arg("--version");
+    #[cfg(windows)]
+    check_cmd.creation_flags(0x08000000);
+    let check = check_cmd.output();
 
     let ready = match check {
         Ok(out) => out.status.success(),
@@ -218,12 +220,11 @@ fn ensure_yt_dlp(python: &str) -> Result<()> {
     };
 
     if !ready {
-        let install = Command::new(python)
-            .arg("-m")
-            .arg("pip")
-            .arg("install")
-            .arg("-U")
-            .arg("yt-dlp")
+        let mut install_cmd = Command::new(python);
+        install_cmd.arg("-m").arg("pip").arg("install").arg("-U").arg("yt-dlp");
+        #[cfg(windows)]
+        install_cmd.creation_flags(0x08000000);
+        let install = install_cmd
             .output()
             .map_err(|e| anyhow!(format!("Failed to execute pip via python: {}", e)))?;
 
@@ -233,10 +234,11 @@ fn ensure_yt_dlp(python: &str) -> Result<()> {
             return Err(anyhow!(format!("pip install yt-dlp failed: {}\n{}", err, out)));
         }
 
-        let verify = Command::new(python)
-            .arg("-m")
-            .arg("yt_dlp")
-            .arg("--version")
+        let mut verify_cmd = Command::new(python);
+        verify_cmd.arg("-m").arg("yt_dlp").arg("--version");
+        #[cfg(windows)]
+        verify_cmd.creation_flags(0x08000000);
+        let verify = verify_cmd
             .output()
             .map_err(|e| anyhow!(format!("Failed to execute python: {}", e)))?;
 

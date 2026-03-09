@@ -6,7 +6,7 @@ mod download;
 
 use crate::db::logger::{log, Event, LogLevel};
 use tokio::time::{sleep, Duration};
-use std::{env, io::Write, process};
+use std::{env, io, io::Write, process};
 use api::get_new_count;
 use discover::login;
 use crate::db::check_state;
@@ -14,6 +14,7 @@ use crate::db::account::{load_tracked_accounts, update_account_state, Account, C
 use crate::db::seen_video::{append_seen_videos, load_all_seen_videos,  total_seen_videos, SeenVideo};
 use crate::discover::fetch_newest_videos;
 use crate::download::download_pending;
+use std::io::IsTerminal;
 
 #[derive(Debug)]
 pub enum RunMode {
@@ -56,15 +57,20 @@ fn print_how_to_use_and_exit(reason: &str) -> ! {
     process::exit(1);
 }
 
-async fn timeout(wait_secs:u8){
+async fn timeout(wait_secs: u8) {
+    if !io::stdout().is_terminal() {
+        sleep(Duration::from_secs(wait_secs as u64)).await;
+        return;
+    }
+
     for remaining in (1..=wait_secs).rev() {
         print!("\rwaiting {}s  ", remaining);
-        let _ = std::io::stdout().flush();
+        let _ = io::stdout().flush();
         sleep(Duration::from_secs(1)).await;
     }
     print!("\rdone.        \n");
-
 }
+
 async fn default_loop() {
     loop {
         let Ok(accounts) = load_tracked_accounts() else {

@@ -81,11 +81,7 @@ async fn default_loop() {
         for account in accounts {
             let new_count = match get_new_count(&account.name).await {
                 Ok(n) => n,
-                Err(e) => {
-                    let msg = format!("{}: get_new_count failed: {}", account.name, e);
-                    // disable log for this, fails too often, also dont care too much if it fails
-                    // eprintln!("{}", msg);
-                    // log(Event::new(msg.clone(), LogLevel::Error));
+                Err(_) => {
                     continue;
                 }
             };
@@ -116,13 +112,13 @@ async fn default_loop() {
                     (account.unavailable, Vec::new())
                 },
                 CountEvent::Increased => {
-                    // log(Event::new(format!("{} Has a New Video",account.name), LogLevel::Info));
-
                     let fetched_videos = match fetch_newest_videos(&account).await {
                         Ok(v) => v,
                         Err(e) => {
-                            let msg = format!("{}: fetch_newest_videos failed: {}", account.name, e);
-                            log(Event::new(msg.clone(), LogLevel::Error));
+                            log(Event::new(
+                                format!("{}: fetch_newest_videos failed: {}", account.name, e),
+                                LogLevel::Error,
+                            ));
                             continue;
                         }
                     };
@@ -145,12 +141,10 @@ async fn default_loop() {
             };
 
             if !new_videos.is_empty() {
-                for vid in &new_videos{
-                    // log(Event::new(format!("{} new video: {} at {}", &account.name, vid.video_id, &vid.url), LogLevel::Info ));
-                }
                 if let Err(e) = append_seen_videos(&account.name, &new_videos) {
                     let msg = format!("{}: append_seen_videos failed: {}", account.name, e);
                     log(Event::new(msg, LogLevel::CriticalFail));
+                    continue;
                 }
             }
 

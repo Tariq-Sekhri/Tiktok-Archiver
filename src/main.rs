@@ -72,8 +72,6 @@ async fn timeout(wait_secs: u8) {
 }
 
 async fn default_loop() {
-    let sigint = tokio::signal::ctrl_c();
-    tokio::pin!(sigint);
     loop {
         let Ok(accounts) = load_tracked_accounts() else {
             log(Event::new("Failed to load accounts".to_string(), LogLevel::CriticalFail));
@@ -157,17 +155,11 @@ async fn default_loop() {
                 let msg = format!("Error downloading for {}: {}", account.name, e);
                 log(Event::new(msg, LogLevel::Error));
             }
-            tokio::select! {
-                _ = &mut sigint => break,
-                _ = sleep(Duration::from_secs(1)) => {}
-            }
+            sleep(Duration::from_secs(1)).await;
 
         }
 
-        tokio::select! {
-            _ = &mut sigint => break,
-            _ = timeout(60u8) => {}
-        }
+        timeout(60u8).await;
     }
 }
 

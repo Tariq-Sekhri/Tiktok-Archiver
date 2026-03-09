@@ -1,13 +1,12 @@
 use crate::api::{get_new_count,  videos_from_anchor_links};
 use anyhow::{Context, Result};
 use std::io;
-use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::sleep;
 use crate::db::browser::{launch_browser, load_cookie_params, save_cookies, cookie_to_param, CookiesMode, scroll_to_bottom};
-use crate::db::account::{add_account, Account};
+use crate::db::account::Account;
 use crate::db::logger::{log, Event, LogLevel};
-use crate::db::seen_video::{append_seen_videos, save_all_seen_videos, SeenVideo};
+use crate::db::seen_video::SeenVideo;
 
 const WAIT_AFTER_LOAD_S: u64 = 2;
 

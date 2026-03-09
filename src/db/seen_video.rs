@@ -85,8 +85,11 @@ pub fn append_seen_videos(username: &str, vids: &Vec<SeenVideo>) ->Result<()>{
     let mut map = load_all_seen_videos()?;
     let user_vids = map.entry(username.to_string()).or_insert_with(Vec::new);
 
+    let mut existing_ids: std::collections::HashSet<i64> =
+        user_vids.iter().map(|v| v.video_id).collect();
+
     for vid in vids {
-        if !user_vids.contains(vid) {
+        if existing_ids.insert(vid.video_id) {
             user_vids.push(vid.clone());
         }
     }

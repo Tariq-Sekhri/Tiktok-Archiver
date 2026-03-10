@@ -34,9 +34,11 @@ pub fn log(event: Event) {
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
 
+    let ts_display = event.timestamp.format("%Y-%m-%d %I:%M:%S%.f %p");
+
     let formatted = format!(
         "[{}]({}): {}",
-        event.log_level, event.timestamp, event.message
+        event.log_level, ts_display, event.message
     );
     eprintln!("{}", formatted);
 
@@ -44,7 +46,7 @@ pub fn log(event: Event) {
         0,
         json!({
             "level": event.log_level.to_string(),
-            "timestamp": event.timestamp.to_string(),
+            "timestamp": ts_display.to_string(),
             "message": event.message
         }),
     );

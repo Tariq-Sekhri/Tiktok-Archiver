@@ -49,7 +49,7 @@ where
     S: Serializer,
 {
     match opt {
-        Some(dt) => s.serialize_str(&dt.format("%Y-%m-%dT%H:%M:%S").to_string()),
+        Some(dt) => s.serialize_str(&dt.format("%Y-%m-%d %I:%M:%S %p").to_string()),
         None => s.serialize_none(),
     }
 }
@@ -62,15 +62,20 @@ where
         None => Ok(None),
         Some(s) => {
             if s.len() == 10 {
-                // "YYYY-MM-DD"
                 NaiveDate::parse_from_str(&s, "%Y-%m-%d")
                     .map(|d| d.and_hms_opt(0, 0, 0).unwrap())
                     .map(Some)
                     .map_err(serde::de::Error::custom)
             } else {
-                NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S")
-                    .map(Some)
-                    .map_err(serde::de::Error::custom)
+                if s.contains('T') {
+                    NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S")
+                        .map(Some)
+                        .map_err(serde::de::Error::custom)
+                } else {
+                    NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %I:%M:%S %p")
+                        .map(Some)
+                        .map_err(serde::de::Error::custom)
+                }
             }
         }
     }

@@ -81,7 +81,7 @@ pub fn load_cookie_params() -> Result<Vec<CookieParam>> {
     }
     if params.is_empty() {
         eprintln!("  [Load Cookies] No tiktok.com cookies in {}", path);
-        eprintln!("  [Load Cookies] use login to save ur cookies {}", path);
+        eprintln!("  [Load Cookies] use login to save your cookies {}", path);
     }
     Ok(params)
 }

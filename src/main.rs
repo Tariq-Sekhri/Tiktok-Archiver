@@ -47,7 +47,7 @@ fn parse_args() -> RunMode {
 fn print_how_to_use_and_exit(reason: &str) -> ! {
     log(Event::new(reason.to_string(), LogLevel::CriticalFail));
     eprintln!("\n[State Check] {}\n", reason);
-    eprintln!("How to use order:");
+    eprintln!("How to use, in order:");
     eprintln!("  1) cargo run login");
     eprintln!("     - Opens a browser, you login, then it saves cookies to `state/saved_cookies.json`");
     eprintln!("  2) update config.yaml");

@@ -35,7 +35,7 @@ fn download_videos(vids:Vec<SeenVideo>)->Result<()>{
             continue;
         }
 
-        println!("Downloding:{}", vid.video_id);
+        println!("Downloading:{}", vid.video_id);
         if let Err(e) = download_video(&vid) {
             update_download_status(&vid.username, vid.video_id, DownloadStatus::DownloadFailed)?;
             log(Event::new(format!("Error Downloading vid:{:?}:({})", vid, e), LogLevel::Error));

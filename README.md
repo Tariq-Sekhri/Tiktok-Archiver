@@ -12,14 +12,11 @@ It watches configured TikTok accounts, keeps a JSON state of seen videos, and do
 ```bash
 cargo build
 ```
-2. **Login to TikTok (save cookies)**
-```bash
-cargo run login
-```
-This opens a headless‑chrome session. Log in to TikTok in the browser window, then press Enter in the terminal to save cookies into `state/saved_cookies.json`.
-
-3. **Edit config**
+2. **Choose accounts and (optionally) download directory**
 After the first run, a `config.yaml` file is created next to the executable. Edit it to set your accounts and download directory:
+```bash
+cargo run
+```
 ```yaml
 accounts:
   - some_username
@@ -27,6 +24,12 @@ download_dir: downloads
 ```
 - `accounts`: list of usernames to watch; append `:false` to temporarily disable one.
 - `download_dir`: base directory where per‑user folders and videos are stored.
+
+On the very first run, if no TikTok cookies are present, the app will open a browser window and walk you through logging in, then save cookies into `state/saved_cookies.json`. You can always run:
+```bash
+cargo run login
+```
+later to explicitly trigger the login flow (for switching accounts or refreshing cookies).
 
 ### Running the watcher
 Run the default mode (poll + download):

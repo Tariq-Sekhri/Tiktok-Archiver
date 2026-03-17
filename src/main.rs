@@ -25,8 +25,8 @@ pub enum RunMode {
 
 fn print_usage_and_exit() -> ! {
     eprintln!("Usage: cargo run [run mode]");
-    eprintln!("  no args = default mode");
-    eprintln!("  login   = login to use an account");
+    eprintln!("  no args = default mode (auto login on first run if needed)");
+    eprintln!("  login   = explicitly run login flow (for switching accounts or refreshing cookies)");
     process::exit(1);
 }
 
@@ -48,12 +48,14 @@ fn print_how_to_use_and_exit(reason: &str) -> ! {
     log(Event::new(reason.to_string(), LogLevel::CriticalFail));
     eprintln!("\n[State Check] {}\n", reason);
     eprintln!("How to use, in order:");
-    eprintln!("  1) cargo run login");
-    eprintln!("     - Opens a browser, you login, then it saves cookies to `state/saved_cookies.json`");
+    eprintln!("  1) cargo run");
+    eprintln!("     - On first run, this will prompt you to log in and save cookies into `state/saved_cookies.json` if none are present.");
     eprintln!("  2) update config.yaml");
-    eprintln!("     - list accounts to track, optionally change download_dir");
+    eprintln!("     - Choose which accounts you want to track and optionally change download_dir.");
     eprintln!("  3) cargo run");
-    eprintln!("     - Default mode: poll for new videos + download pending");
+    eprintln!("     - Default mode: poll for new videos + download pending using your saved login.");
+    eprintln!("  4) cargo run login");
+    eprintln!("     - Explicitly run the login flow to switch accounts or refresh cookies.");
     process::exit(1);
 }
 

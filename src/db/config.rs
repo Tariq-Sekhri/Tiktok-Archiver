@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize)]
 pub struct Config{
     pub accounts:Vec<String>,
-    pub python_path:String,
     pub download_dir:String,
 }
 
@@ -36,7 +35,7 @@ fn config_file() -> Result<PathBuf> {
         exe.parent().unwrap_or_else(|| Path::new(".")).to_path_buf()
     };
     let path = dir.join("config.yaml");
-    ensure_file(&path, "accounts:\n# - username1\npython_path: \ndownload_dir: downloads\n")?;
+    ensure_file(&path, "accounts:\n# - username1\ndownload_dir: downloads\n")?;
     Ok(path)
 }
 

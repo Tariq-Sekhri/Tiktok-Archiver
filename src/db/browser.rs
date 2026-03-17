@@ -86,7 +86,7 @@ pub fn load_cookie_params() -> Result<Vec<CookieParam>> {
     Ok(params)
 }
 
-pub fn save_cookies(cookies: &Vec<CookieParam>)->Result<()> {
+pub fn save_cookies(cookies: &[CookieParam])->Result<()> {
     let path = cookies_path()?;
 
     let cookies_json: Vec<serde_json::Value> = cookies

@@ -53,6 +53,23 @@ pub fn download_pending()->Result<()>{
     Ok(())
 }
 
+fn resolve_executable_path(default_name: &str) -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join("state").join(default_name);
+            if candidate.exists() {
+                return candidate;
+            }
+            let candidate = dir.join(default_name);
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+
+    PathBuf::from(default_name)
+}
+
 fn download_video(vid: &SeenVideo) -> Result<()> {
     let path = video_file_path(&vid.username, vid.video_id)?;
     let cookie_params = load_cookie_params()?;
@@ -61,10 +78,9 @@ fn download_video(vid: &SeenVideo) -> Result<()> {
         .map(|c| format!("{}={}", c.name, c.value))
         .collect::<Vec<_>>()
         .join("; ");
-    let mut cmd = Command::new(load_config()?.python_path);
-    cmd.arg("-m")
-        .arg("yt_dlp")
-        .arg("-o")
+    let ytdlp_path = resolve_executable_path("yt-dlp.exe");
+    let mut cmd = Command::new(&ytdlp_path);
+    cmd.arg("-o")
         .arg(path.to_str().unwrap_or(""))
         .arg("--merge-output-format")
         .arg("mp4")
@@ -77,7 +93,7 @@ fn download_video(vid: &SeenVideo) -> Result<()> {
 
     let output = cmd
         .output()
-        .map_err(|e| anyhow!(format!("Failed to execute python: {}", e)))?;
+        .map_err(|e| anyhow!(format!("Failed to execute yt-dlp: {}", e)))?;
 
     if output.status.success() {
         Ok(())

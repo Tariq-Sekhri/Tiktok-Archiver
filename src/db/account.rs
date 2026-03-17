@@ -85,7 +85,7 @@ pub fn load_tracked_accounts() -> Result<Vec<Account>> {
     let accounts = load_accounts()?;
     let tracked_names:Vec<String> = load_config()?
         .accounts.
-        into_iter().filter(|acc| is_tracked(&acc)).collect();
+        into_iter().filter(|acc| is_tracked(acc)).collect();
     
     let filtered: Vec<Account> = accounts
         .into_iter()

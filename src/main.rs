@@ -51,7 +51,7 @@ fn print_how_to_use_and_exit(reason: &str) -> ! {
     eprintln!("  1) cargo run login");
     eprintln!("     - Opens a browser, you login, then it saves cookies to `state/saved_cookies.json`");
     eprintln!("  2) update config.yaml");
-    eprintln!("     - set python_path, list accounts to track, optionally change download_dir");
+    eprintln!("     - list accounts to track, optionally change download_dir");
     eprintln!("  3) cargo run");
     eprintln!("     - Default mode: poll for new videos + download pending");
     process::exit(1);
@@ -199,7 +199,7 @@ fn reconcile_account_state(account: &Account, new_count: i64, unavailable: i64) 
         log(Event::new(msg, LogLevel::Error));
     }
 
-    if let Err(e) = update_account_state(&account, new_count, diff, unavailable) {
+    if let Err(e) = update_account_state(account, new_count, diff, unavailable) {
         let msg = format!("Error updating state for @{}: {}", account.name, e);
         log(Event::new(msg, LogLevel::CriticalFail));
     }

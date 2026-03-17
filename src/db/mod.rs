@@ -19,6 +19,7 @@ use crate::db::logger::{log, Event, LogLevel};
 use anyhow::Result;
 use anyhow::anyhow;
 use crate::discover::first_discovery;
+use tokio::io::AsyncWriteExt;
 
 static YT_DLP_READY: OnceLock<()> = OnceLock::new();
 
@@ -70,7 +71,7 @@ pub async fn check_state(mode: &RunMode) {
             if !cookies_have_any(&cookies_path) {
                 print_how_to_use_and_exit("`state/saved_cookies.json` has no cookies (or invalid JSON). Run `cargo run login` first.");
             }
-            if let Err(e) = ensure_yt_dlp(&config.python_path) {
+            if let Err(e) = ensure_yt_dlp().await {
                 print_how_to_use_and_exit(&format!("yt-dlp check/install failed: {}", e));
             }
             config_and_accounts_sync(&mut config).await;
@@ -129,7 +130,7 @@ async fn config_and_accounts_sync(config: &mut Config) {
             println!("[sync] first_discovery start for @{}", name);
             match first_discovery(name.clone()).await {
                 Ok((acc,vids))=>{
-                    if let Err(_) = append_seen_videos(&acc.name.to_string(), &vids){
+                    if append_seen_videos(&acc.name.to_string(), &vids).is_err() {
                         println!("Error Appending");
                         if let Err(e) = save_all_seen_videos(&HashMap::from([(acc.name.clone(), vids.clone())])) {
                             print_how_to_use_and_exit(&format!("Failed to save seen videos: {}", e));
@@ -188,66 +189,82 @@ fn general_check() -> (PathBuf, Config) {
     };
 
 
-    if config.python_path.trim().is_empty() {
-        print_how_to_use_and_exit("Missing `python_path` in config.yaml.");
-    }
-
-    if !Path::new(&config.python_path).exists() {
-        let msg = format!("`python_path` does not exist: {}", config.python_path);
-        print_how_to_use_and_exit(&msg);
-    }
-
     if config.accounts.iter().all(|a| a.trim().is_empty()) {
         print_how_to_use_and_exit("No accounts configured in config.yaml. Add at least one username under `accounts:`.");
     }
     (cookies_path, config)
 }
 
-fn ensure_yt_dlp(python: &str) -> Result<()> {
+fn resolve_executable_path(default_name: &str) -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join("state").join(default_name);
+            if candidate.exists() {
+                return candidate;
+            }
+            let candidate = dir.join(default_name);
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+
+    PathBuf::from(default_name)
+}
+
+async fn download_yt_dlp(dest: &PathBuf) -> Result<()> {
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let tmp = dest.with_extension("download");
+    let url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
+
+    let resp = reqwest::get(url).await?;
+    if !resp.status().is_success() {
+        return Err(anyhow!(format!("download failed: http {}", resp.status())));
+    }
+
+    let bytes = resp.bytes().await?;
+    let mut file = tokio::fs::File::create(&tmp).await?;
+    file.write_all(&bytes).await?;
+    file.flush().await?;
+    drop(file);
+
+    if dest.exists() {
+        let _ = fs::remove_file(dest);
+    }
+    fs::rename(&tmp, dest)?;
+    Ok(())
+}
+
+async fn ensure_yt_dlp() -> Result<()> {
     if YT_DLP_READY.get().is_some() {
         return Ok(());
     }
 
-    let mut check_cmd = Command::new(python);
-    check_cmd.arg("-m").arg("yt_dlp").arg("--version");
-    #[cfg(windows)]
-    check_cmd.creation_flags(0x08000000);
-    let check = check_cmd.output();
-
-    let ready = match check {
-        Ok(out) => out.status.success(),
-        Err(_) => false,
-    };
+    let ytdlp_path = resolve_executable_path("yt-dlp.exe");
+    let ready = is_ytdlp_runnable(&ytdlp_path);
 
     if !ready {
-        let mut install_cmd = Command::new(python);
-        install_cmd.arg("-m").arg("pip").arg("install").arg("-U").arg("yt-dlp");
-        #[cfg(windows)]
-        install_cmd.creation_flags(0x08000000);
-        let install = install_cmd
-            .output()
-            .map_err(|e| anyhow!(format!("Failed to execute pip via python: {}", e)))?;
-
-        if !install.status.success() {
-            let err = String::from_utf8_lossy(&install.stderr);
-            let out = String::from_utf8_lossy(&install.stdout);
-            return Err(anyhow!(format!("pip install yt-dlp failed: {}\n{}", err, out)));
-        }
-
-        let mut verify_cmd = Command::new(python);
-        verify_cmd.arg("-m").arg("yt_dlp").arg("--version");
-        #[cfg(windows)]
-        verify_cmd.creation_flags(0x08000000);
-        let verify = verify_cmd
-            .output()
-            .map_err(|e| anyhow!(format!("Failed to execute python: {}", e)))?;
-
-        if !verify.status.success() {
-            let err = String::from_utf8_lossy(&verify.stderr);
-            return Err(anyhow!(format!("yt-dlp still not usable after install: {}", err)));
+        let target = state_dir().join("yt-dlp.exe");
+        download_yt_dlp(&target).await?;
+        if !is_ytdlp_runnable(&target) {
+            return Err(anyhow!(format!("yt-dlp downloaded but not runnable: {}", target.display())));
         }
     }
 
     let _ = YT_DLP_READY.set(());
     Ok(())
+}
+
+fn is_ytdlp_runnable(path: &PathBuf) -> bool {
+    let mut check_cmd = Command::new(path);
+    check_cmd.arg("--version");
+    #[cfg(windows)]
+    check_cmd.creation_flags(0x08000000);
+    match check_cmd.output() {
+        Ok(out) => out.status.success(),
+        Err(_) => false,
+    }
 }

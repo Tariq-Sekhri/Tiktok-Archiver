@@ -66,16 +66,14 @@ where
                     .map(|d| d.and_hms_opt(0, 0, 0).unwrap())
                     .map(Some)
                     .map_err(serde::de::Error::custom)
+            } else if s.contains('T') {
+                NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S")
+                    .map(Some)
+                    .map_err(serde::de::Error::custom)
             } else {
-                if s.contains('T') {
-                    NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S")
-                        .map(Some)
-                        .map_err(serde::de::Error::custom)
-                } else {
-                    NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %I:%M:%S %p")
-                        .map(Some)
-                        .map_err(serde::de::Error::custom)
-                }
+                NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %I:%M:%S %p")
+                    .map(Some)
+                    .map_err(serde::de::Error::custom)
             }
         }
     }

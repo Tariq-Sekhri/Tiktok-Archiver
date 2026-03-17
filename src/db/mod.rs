@@ -18,7 +18,7 @@ use crate::db::account::{account_file, add_account, load_accounts};
 use crate::db::logger::{log, Event, LogLevel};
 use anyhow::Result;
 use anyhow::anyhow;
-use crate::discover::first_discovery;
+use crate::discover::{first_discovery, login};
 use tokio::io::AsyncWriteExt;
 
 static YT_DLP_READY: OnceLock<()> = OnceLock::new();
@@ -64,12 +64,14 @@ pub async fn check_state(mode: &RunMode) {
     match mode {
         RunMode::Login => {}
         RunMode::Default => {
-            if !cookies_path.exists() {
-                print_how_to_use_and_exit("Missing `state/saved_cookies.json` (cookies not saved yet).");
-            }
-
             if !cookies_have_any(&cookies_path) {
-                print_how_to_use_and_exit("`state/saved_cookies.json` has no cookies (or invalid JSON). Run `cargo run login` first.");
+                println!("No TikTok login detected, starting login flow.");
+                if let Err(e) = login().await {
+                    print_how_to_use_and_exit(&format!("Login failed: {}", e));
+                }
+                if !cookies_have_any(&cookies_path) {
+                    print_how_to_use_and_exit("Login completed but no cookies were saved. Please try again.");
+                }
             }
             if let Err(e) = ensure_yt_dlp().await {
                 print_how_to_use_and_exit(&format!("yt-dlp check/install failed: {}", e));

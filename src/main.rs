@@ -1,20 +1,21 @@
-
-mod db;
 mod api;
+mod db;
 mod discover;
 mod download;
 
-use crate::db::logger::{log, Event, LogLevel};
-use tokio::time::{sleep, Duration};
-use std::{env, io, io::Write, process};
-use api::get_new_count;
-use discover::login;
-use crate::db::check_state;
 use crate::db::account::{load_tracked_accounts, update_account_state, Account, CountEvent};
-use crate::db::seen_video::{append_seen_videos, load_all_seen_videos,  total_seen_videos, SeenVideo};
+use crate::db::check_state;
+use crate::db::logger::{log, Event, LogLevel};
+use crate::db::seen_video::{
+    append_seen_videos, load_all_seen_videos, total_seen_videos, SeenVideo,
+};
 use crate::discover::fetch_newest_videos;
 use crate::download::download_pending;
+use api::get_new_count;
+use discover::login;
 use std::io::IsTerminal;
+use std::{env, io, io::Write, process};
+use tokio::time::{sleep, Duration};
 
 #[derive(Debug)]
 pub enum RunMode {
@@ -22,11 +23,12 @@ pub enum RunMode {
     Default,
 }
 
-
 fn print_usage_and_exit() -> ! {
     eprintln!("Usage: cargo run [run mode]");
     eprintln!("  no args = default mode (auto login on first run if needed)");
-    eprintln!("  login   = explicitly run login flow (for switching accounts or refreshing cookies)");
+    eprintln!(
+        "  login   = explicitly run login flow (for switching accounts or refreshing cookies)"
+    );
     process::exit(1);
 }
 
@@ -34,9 +36,7 @@ fn parse_args() -> RunMode {
     let args: Vec<String> = env::args().collect();
     if let Some(arg) = args.get(1) {
         match arg.as_str() {
-            "login" => {
-                RunMode::Login
-            },
+            "login" => RunMode::Login,
             _ => print_usage_and_exit(),
         }
     } else {
@@ -53,7 +53,9 @@ fn print_how_to_use_and_exit(reason: &str) -> ! {
     eprintln!("  2) update config.yaml");
     eprintln!("     - Choose which accounts you want to track and optionally change download_dir.");
     eprintln!("  3) cargo run");
-    eprintln!("     - Default mode: poll for new videos + download pending using your saved login.");
+    eprintln!(
+        "     - Default mode: poll for new videos + download pending using your saved login."
+    );
     eprintln!("  4) cargo run login");
     eprintln!("     - Explicitly run the login flow to switch accounts or refresh cookies.");
     process::exit(1);
@@ -107,7 +109,13 @@ async fn default_loop() {
             let existing_videos: Vec<SeenVideo> = match seen_map.get(&account.name) {
                 Some(v) => v.clone(),
                 None => {
-                    log(Event::new(format!("{}: no entry in seen_videos, using empty list", account.name), LogLevel::Error));
+                    log(Event::new(
+                        format!(
+                            "{}: no entry in seen_videos, using empty list",
+                            account.name
+                        ),
+                        LogLevel::Error,
+                    ));
                     Vec::new()
                 }
             };
@@ -115,39 +123,40 @@ async fn default_loop() {
             let existing_ids: std::collections::HashSet<i64> =
                 existing_videos.iter().map(|v| v.video_id).collect();
 
-            let (unavailable, new_videos): (i64, Vec<SeenVideo>) = match CountEvent::observe(account.count, new_count) {
-                CountEvent::Same => {
-                    println!("{}: Same", account.name);
-                    (account.unavailable, Vec::new())
-                },
-                CountEvent::Increased => {
-                    let fetched_videos = match fetch_newest_videos(&account).await {
-                        Ok(v) => v,
-                        Err(e) => {
-                            log(Event::new(
-                                format!("{}: fetch_newest_videos failed: {}", account.name, e),
-                                LogLevel::Error,
-                            ));
-                            continue;
-                        }
-                    };
-                    let new_v: Vec<SeenVideo> = fetched_videos
-                        .into_iter()
-                        .filter(|v| !existing_ids.contains(&v.video_id))
-                        .collect();
-                    (account.unavailable, new_v)
-                },
-                CountEvent::Decreased => {
-                    let unavailable = account.unavailable + (account.count - new_count);
-                    println!(
-                        "[main] {}: count decreased, unavailable incremented by {} -> {}",
-                        account.name,
-                        account.count - new_count,
-                        unavailable
-                    );
-                    (unavailable, Vec::new())
-                },
-            };
+            let (unavailable, new_videos): (i64, Vec<SeenVideo>) =
+                match CountEvent::observe(account.count, new_count) {
+                    CountEvent::Same => {
+                        println!("{}: Same", account.name);
+                        (account.unavailable, Vec::new())
+                    }
+                    CountEvent::Increased => {
+                        let fetched_videos = match fetch_newest_videos(&account).await {
+                            Ok(v) => v,
+                            Err(e) => {
+                                log(Event::new(
+                                    format!("{}: fetch_newest_videos failed: {}", account.name, e),
+                                    LogLevel::Error,
+                                ));
+                                continue;
+                            }
+                        };
+                        let new_v: Vec<SeenVideo> = fetched_videos
+                            .into_iter()
+                            .filter(|v| !existing_ids.contains(&v.video_id))
+                            .collect();
+                        (account.unavailable, new_v)
+                    }
+                    CountEvent::Decreased => {
+                        let unavailable = account.unavailable + (account.count - new_count);
+                        println!(
+                            "[main] {}: count decreased, unavailable incremented by {} -> {}",
+                            account.name,
+                            account.count - new_count,
+                            unavailable
+                        );
+                        (unavailable, Vec::new())
+                    }
+                };
 
             if !new_videos.is_empty() {
                 if let Err(e) = append_seen_videos(&account.name, &new_videos) {
@@ -157,7 +166,6 @@ async fn default_loop() {
                 }
             }
 
-
             reconcile_account_state(&account, new_count, unavailable);
 
             if let Err(e) = download_pending() {
@@ -165,7 +173,6 @@ async fn default_loop() {
                 log(Event::new(msg, LogLevel::Error));
             }
             sleep(Duration::from_secs(1)).await;
-
         }
 
         timeout(60u8).await;
@@ -184,11 +191,7 @@ fn reconcile_account_state(account: &Account, new_count: i64, unavailable: i64) 
 
     let total_seen_videos_count = *totals.get(&account.name).unwrap_or(&0) as i64;
 
-
     let diff = new_count + unavailable - total_seen_videos_count;
-
-
-
 
     if diff < 0 {
         let msg = format!(
@@ -227,4 +230,3 @@ async fn main() {
         RunMode::Default => default_loop().await,
     }
 }
-

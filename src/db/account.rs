@@ -1,6 +1,6 @@
 use std::fs;
 use serde::{Deserialize, Serialize};
-use crate::db::{ensure_file, state_dir};
+use crate::db::{atomic_write_text, ensure_file, state_dir};
 use crate::db::config::{load_config, is_tracked};
 use anyhow::{anyhow, Context, Result};
 
@@ -51,7 +51,8 @@ pub fn load_accounts() -> Result<Vec<Account>> {
 
 fn save_accounts(accounts:&Vec<Account>) ->Result<()>{
     let file = account_file()?;
-    serde_json::to_writer_pretty(fs::File::create(&file)?,&accounts )?;
+    let json = serde_json::to_string_pretty(&accounts)?;
+    atomic_write_text(std::path::Path::new(&file), &json)?;
     Ok(())
 }
 

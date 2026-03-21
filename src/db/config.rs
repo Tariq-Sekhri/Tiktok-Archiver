@@ -1,7 +1,7 @@
 use std::fs;
 use std::env;
 use std::path::{Path, PathBuf};
-use crate::db::ensure_file;
+use crate::db::{atomic_write_text, ensure_file};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
@@ -21,8 +21,9 @@ pub fn load_config()->Result<Config>{
 
 pub fn save_config(config:&Config)->Result<()>{
     let path = config_file()?;
-    let file = fs::File::create(&path)?;
-    Ok(serde_yaml::to_writer(&file,&config)?)
+    let yaml = serde_yaml::to_string(&config)?;
+    atomic_write_text(&path, &yaml)?;
+    Ok(())
 }
 
 fn config_file() -> Result<PathBuf> {

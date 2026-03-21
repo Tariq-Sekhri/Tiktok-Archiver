@@ -1,4 +1,4 @@
-use crate::db::{ensure_file, state_dir};
+use crate::db::{atomic_write_text, ensure_file, state_dir};
 use anyhow::{anyhow, Context};
 use anyhow::Result;
 use headless_chrome::protocol::cdp::Network::CookieParam;
@@ -118,7 +118,7 @@ pub fn save_cookies(cookies: &[CookieParam])->Result<()> {
     let root = serde_json::json!({ "cookies": cookies_json });
 
     let json_str = serde_json::to_string_pretty(&root)?;
-    fs::write(&path, json_str)?;
+    atomic_write_text(std::path::Path::new(&path), &json_str)?;
     Ok(())
 }
 

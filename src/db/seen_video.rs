@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use chrono::{Local, NaiveDate, NaiveDateTime};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use crate::db::{ensure_file, state_dir};
+use crate::db::{atomic_write_text, ensure_file, state_dir};
 use anyhow::{Context, Result};
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy)]
@@ -109,8 +109,8 @@ pub fn load_all_seen_videos() -> Result<HashMap<String, Vec<SeenVideo>>> {
 
 pub fn save_all_seen_videos(map: &HashMap<String, Vec<SeenVideo>>)->Result<()> {
     let path = seen_videos_file()?;
-    let file = fs::File::create(&path)?;
-    serde_json::to_writer_pretty(file, map)?;
+    let json = serde_json::to_string_pretty(map)?;
+    atomic_write_text(std::path::Path::new(&path), &json)?;
     Ok(())
 }
 

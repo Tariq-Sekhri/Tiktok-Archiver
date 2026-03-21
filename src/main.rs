@@ -75,9 +75,16 @@ async fn timeout(wait_secs: u8) {
 
 async fn default_loop() {
     loop {
-        let Ok(accounts) = load_tracked_accounts() else {
-            log(Event::new("Failed to load accounts".to_string(), LogLevel::CriticalFail));
-            continue;
+        let accounts = match load_tracked_accounts() {
+            Ok(accounts) => accounts,
+            Err(e) => {
+                log(Event::new(
+                    format!("Failed to load accounts: {}", e),
+                    LogLevel::CriticalFail,
+                ));
+                timeout(5u8).await;
+                continue;
+            }
         };
 
         for account in accounts {

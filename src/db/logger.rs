@@ -5,7 +5,7 @@ use std::fmt;
 use std::fs;
 use std::process;
 
-use crate::db::{ensure_file, state_dir};
+use crate::db::{atomic_write_text, ensure_file, state_dir};
 
 pub struct Event {
     message: String,
@@ -51,8 +51,9 @@ pub fn log(event: Event) {
         }),
     );
 
-    fs::write(&path, serde_json::to_string_pretty(&logs).expect("Failed to serialize logs"))
-        .expect("Failed to write log file");
+    if let Ok(serialized) = serde_json::to_string_pretty(&logs) {
+        let _ = atomic_write_text(&path, &serialized);
+    }
     if event.log_level == LogLevel::CriticalFail{
         process::exit(1);
     }

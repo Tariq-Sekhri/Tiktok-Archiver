@@ -49,11 +49,34 @@ pub fn ensure_file(path: &PathBuf, default_contents: &str) -> Result<()> {
     }
     if path.exists() {
         if fs::metadata(path)?.len() == 0 {
-            fs::write(path, default_contents)?;
+            atomic_write_text(path, default_contents)?;
         }
         return Ok(());
     }
-    fs::write(path, default_contents)?;
+    atomic_write_text(path, default_contents)?;
+    Ok(())
+}
+
+pub fn atomic_write_text(path: &Path, contents: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp_path = path.with_extension("tmp");
+    {
+        let mut file = fs::File::create(&tmp_path)?;
+        std::io::Write::write_all(&mut file, contents.as_bytes())?;
+        std::io::Write::flush(&mut file)?;
+        file.sync_all()?;
+    }
+    match fs::rename(&tmp_path, path) {
+        Ok(_) => {}
+        Err(_) => {
+            if path.exists() {
+                fs::remove_file(path)?;
+            }
+            fs::rename(&tmp_path, path)?;
+        }
+    }
     Ok(())
 }
 

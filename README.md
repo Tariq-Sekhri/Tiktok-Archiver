@@ -1,7 +1,7 @@
 ## Tiktok Archiver
 Minimal TikTok account watcher and downloader written in Rust.
 It watches configured TikTok accounts, keeps a JSON state of seen videos, and downloads missing videos using `yt-dlp`, while logging activity to a JSON log file.
-
+**[Setup Guide Video](https://www.youtube.com/watch?v=3Ewcy7WfzaA)** — Watch this for a walkthrough of the installation and configuration process.
 
 ### Requirements
 - Rust toolchain (edition 2021)

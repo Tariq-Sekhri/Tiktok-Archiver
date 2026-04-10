@@ -3,6 +3,7 @@ pub mod account;
 pub mod browser;
 pub mod logger;
 pub mod config;
+pub mod critical_alert;
 
 use std::{fs, path::{PathBuf, Path}};
 use std::collections::{HashMap, HashSet};

@@ -1,7 +1,9 @@
 use std::fs;
+use std::path::Path;
 use serde::{Deserialize, Serialize};
 use crate::db::{atomic_write_text, ensure_file, state_dir};
 use crate::db::config::{load_config, is_tracked};
+use crate::db::logger::{log, Event, LogLevel};
 use anyhow::{anyhow, Context, Result};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -43,10 +45,78 @@ impl CountEvent {
     }
 }
 
+fn utf16_units_to_string(units: &[u16]) -> Result<String> {
+    let slice = if units.first() == Some(&0xFEFF) {
+        &units[1..]
+    } else {
+        units
+    };
+    String::from_utf16(slice).map_err(|e| anyhow!("utf-16 decode: {}", e))
+}
+
+fn decode_json_file_bytes(bytes: &[u8]) -> Result<String> {
+    if bytes.is_empty() || bytes.iter().all(|b| matches!(b, b' ' | b'\n' | b'\r' | b'\t')) {
+        return Ok("[]".to_string());
+    }
+    if bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE {
+        let payload = &bytes[2..];
+        if payload.len() % 2 != 0 {
+            return Err(anyhow!("utf-16le: odd byte length"));
+        }
+        let mut u16s = Vec::with_capacity(payload.len() / 2);
+        for chunk in payload.chunks_exact(2) {
+            u16s.push(u16::from_le_bytes([chunk[0], chunk[1]]));
+        }
+        return utf16_units_to_string(&u16s);
+    }
+    if bytes.len() >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF {
+        let payload = &bytes[2..];
+        if payload.len() % 2 != 0 {
+            return Err(anyhow!("utf-16be: odd byte length"));
+        }
+        let mut u16s = Vec::with_capacity(payload.len() / 2);
+        for chunk in payload.chunks_exact(2) {
+            u16s.push(u16::from_be_bytes([chunk[0], chunk[1]]));
+        }
+        return utf16_units_to_string(&u16s);
+    }
+    let start = if bytes.len() >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF {
+        3
+    } else {
+        0
+    };
+    String::from_utf8(bytes[start..].to_vec()).map_err(|e| anyhow!("utf-8: {}", e))
+}
+
+fn backup_corrupt_accounts(path_str: &str, original: &[u8]) -> Result<()> {
+    let p = Path::new(path_str);
+    let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
+    let dest = p.with_file_name(format!("accounts.json.corrupt.{}", ts));
+    fs::write(&dest, original).with_context(|| format!("write {}", dest.display()))?;
+    Ok(())
+}
+
 pub fn load_accounts() -> Result<Vec<Account>> {
     let path = account_file()?;
-    let content = fs::read_to_string(&path).context("failed to read accounts.json")?;
-    serde_json::from_str(&content).context("error deserializing accounts")
+    let bytes = fs::read(&path).context("failed to read accounts.json")?;
+    let text = decode_json_file_bytes(&bytes).context("invalid text encoding in accounts.json")?;
+    match serde_json::from_str::<Vec<Account>>(&text) {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            if let Err(be) = backup_corrupt_accounts(&path, &bytes) {
+                return Err(anyhow!(be).context(format!("error deserializing accounts: {}", e)));
+            }
+            atomic_write_text(Path::new(&path), "[]\n")?;
+            log(Event::new(
+                format!(
+                    "accounts.json was invalid; backed up to state/accounts.json.corrupt.* and reset: {}",
+                    e
+                ),
+                LogLevel::Error,
+            ));
+            Ok(Vec::new())
+        }
+    }
 }
 
 fn save_accounts(accounts:&Vec<Account>) ->Result<()>{

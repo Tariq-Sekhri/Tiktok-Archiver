@@ -5,6 +5,7 @@ use std::fmt;
 use std::fs;
 use std::process;
 
+use crate::db::critical_alert::alert_critical_failure;
 use crate::db::{atomic_write_text, ensure_file, state_dir};
 
 pub struct Event {
@@ -51,10 +52,16 @@ pub fn log(event: Event) {
         }),
     );
 
+    const MAX_LOG_ENTRIES: usize = 2000;
+    if logs.len() > MAX_LOG_ENTRIES {
+        logs.truncate(MAX_LOG_ENTRIES);
+    }
+
     if let Ok(serialized) = serde_json::to_string_pretty(&logs) {
         let _ = atomic_write_text(&path, &serialized);
     }
-    if event.log_level == LogLevel::CriticalFail{
+    if event.log_level == LogLevel::CriticalFail {
+        alert_critical_failure(&event.message);
         process::exit(1);
     }
 }

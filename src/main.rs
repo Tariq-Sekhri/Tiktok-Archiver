@@ -82,7 +82,7 @@ async fn default_loop() {
             Err(e) => {
                 log(Event::new(
                     format!("Failed to load accounts: {}", e),
-                    LogLevel::CriticalFail,
+                    LogLevel::Error,
                 ));
                 timeout(5u8).await;
                 continue;

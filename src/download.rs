@@ -3,7 +3,7 @@ use std::process::Command;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use anyhow::anyhow;
-use crate::db::browser::load_cookie_params;
+use crate::db::browser::{load_cookie_params, write_ytdlp_cookie_jar};
 use crate::db::seen_video::{load_all_seen_videos,  update_download_status, DownloadStatus, SeenVideo};
 use anyhow::Result;
 use crate::db::config::load_config;
@@ -66,6 +66,14 @@ fn resolve_executable_path(default_name: &str) -> PathBuf {
             }
         }
     }
+    if cfg!(debug_assertions) {
+        if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
+            let candidate = PathBuf::from(manifest).join("state").join(default_name);
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
 
     PathBuf::from(default_name)
 }
@@ -73,11 +81,6 @@ fn resolve_executable_path(default_name: &str) -> PathBuf {
 fn download_video(vid: &SeenVideo) -> Result<()> {
     let path = video_file_path(&vid.username, vid.video_id)?;
     let cookie_params = load_cookie_params()?;
-    let cookie_header = cookie_params
-        .iter()
-        .map(|c| format!("{}={}", c.name, c.value))
-        .collect::<Vec<_>>()
-        .join("; ");
     let ytdlp_path = resolve_executable_path("yt-dlp.exe");
     let mut cmd = Command::new(&ytdlp_path);
     cmd.arg("-o")
@@ -85,8 +88,10 @@ fn download_video(vid: &SeenVideo) -> Result<()> {
         .arg("--merge-output-format")
         .arg("mp4")
         .arg("--no-warnings");
-    cmd.arg("--add-header")
-        .arg(format!("Cookie:{}", cookie_header));
+    if !cookie_params.is_empty() {
+        let jar = write_ytdlp_cookie_jar(&cookie_params)?;
+        cmd.arg("--cookies").arg(jar);
+    }
     cmd.arg(&vid.url);
     #[cfg(windows)]
     cmd.creation_flags(0x08000000);
@@ -102,4 +107,3 @@ fn download_video(vid: &SeenVideo) -> Result<()> {
         Err(anyhow!(format!("yt-dlp: {}", err)))
     }
 }
-

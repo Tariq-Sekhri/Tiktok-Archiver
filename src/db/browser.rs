@@ -62,6 +62,10 @@ pub fn load_cookie_params() -> Result<Vec<CookieParam>> {
             .get("httpOnly")
             .or(c.get("http_only"))
             .and_then(|v| v.as_bool());
+        let expires = match c.get("expires").and_then(|v| v.as_i64()) {
+            Some(t) if t > 0 => Some(t as f64),
+            _ => None,
+        };
         params.push(CookieParam {
             name,
             value,
@@ -71,7 +75,7 @@ pub fn load_cookie_params() -> Result<Vec<CookieParam>> {
             secure,
             http_only,
             same_site: None,
-            expires: None,
+            expires,
             priority: None,
             same_party: None,
             source_scheme: None,
@@ -84,6 +88,43 @@ pub fn load_cookie_params() -> Result<Vec<CookieParam>> {
         eprintln!("  [Load Cookies] run `cargo run` once to save your cookies (or `cargo run login` to swap accounts): {}", path);
     }
     Ok(params)
+}
+
+pub fn cookie_params_to_netscape_cookies_txt(params: &[CookieParam]) -> String {
+    let mut lines: Vec<String> = vec![
+        "# Netscape HTTP Cookie File".to_string(),
+        "# https://curl.se/docs/http-cookies.html".to_string(),
+    ];
+    for p in params {
+        let domain = p.domain.as_deref().unwrap_or(".tiktok.com");
+        let include_subdomains = if domain.starts_with('.') {
+            "TRUE"
+        } else {
+            "FALSE"
+        };
+        let path = p.path.as_deref().unwrap_or("/");
+        let secure = if p.secure.unwrap_or(false) {
+            "TRUE"
+        } else {
+            "FALSE"
+        };
+        let expiration = match p.expires {
+            Some(t) if t > 0.0 => t as i64,
+            _ => 0,
+        };
+        lines.push(format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            domain, include_subdomains, path, secure, expiration, p.name, p.value
+        ));
+    }
+    format!("{}\n", lines.join("\n"))
+}
+
+pub fn write_ytdlp_cookie_jar(params: &[CookieParam]) -> Result<PathBuf> {
+    let path = state_dir().join("ytdlp_cookies.txt");
+    let content = cookie_params_to_netscape_cookies_txt(params);
+    atomic_write_text(&path, &content)?;
+    Ok(path)
 }
 
 pub fn save_cookies(cookies: &[CookieParam])->Result<()> {

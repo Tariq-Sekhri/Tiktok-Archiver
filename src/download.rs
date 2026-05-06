@@ -4,7 +4,7 @@ use std::process::Command;
 use std::os::windows::process::CommandExt;
 use anyhow::anyhow;
 use crate::db::browser::{load_cookie_params, write_ytdlp_cookie_jar};
-use crate::db::seen_video::{load_all_seen_videos,  update_download_status, DownloadStatus, SeenVideo};
+use crate::db::seen_video::{load_all_seen_videos, update_download_status, update_source_available, DownloadStatus, SeenVideo};
 use anyhow::Result;
 use crate::db::config::load_config;
 use crate::db::logger::{log, Event, LogLevel};
@@ -38,6 +38,9 @@ fn download_videos(vids:Vec<SeenVideo>)->Result<()>{
         println!("Downloading:{}", vid.video_id);
         if let Err(e) = download_video(&vid) {
             update_download_status(&vid.username, vid.video_id, DownloadStatus::DownloadFailed)?;
+            if is_fatal_source_error(&e.to_string()) {
+                update_source_available(&vid.username, vid.video_id, false)?;
+            }
             log(Event::new(format!("Error Downloading vid:{:?}:({})", vid, e), LogLevel::Error));
             continue;
         };
@@ -45,6 +48,17 @@ fn download_videos(vids:Vec<SeenVideo>)->Result<()>{
         update_download_status(&vid.username, vid.video_id, DownloadStatus::Downloaded)?;
     }
     Ok(())
+}
+
+fn is_fatal_source_error(error: &str) -> bool {
+    let msg = error.to_ascii_lowercase();
+    msg.contains("your ip address is blocked from accessing this post")
+        || msg.contains("video is unavailable")
+        || msg.contains("this post is private")
+        || msg.contains("this account is private")
+        || msg.contains("not available")
+        || msg.contains("video has been removed")
+        || msg.contains("status code 404")
 }
 
 pub fn download_pending()->Result<()>{

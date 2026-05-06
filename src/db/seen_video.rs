@@ -129,6 +129,16 @@ pub fn update_download_status(username: &str, video_id: i64, status: DownloadSta
     save_all_seen_videos(&map)
 }
 
+pub fn update_source_available(username: &str, video_id: i64, source_available: bool) -> Result<()> {
+    let mut map = load_all_seen_videos()?;
+    if let Some(vids) = map.get_mut(username) {
+        if let Some(v) = vids.iter_mut().find(|v| v.video_id == video_id) {
+            v.source_available = source_available;
+        }
+    }
+    save_all_seen_videos(&map)
+}
+
 
 pub fn total_seen_videos() -> Result<HashMap<String, usize>> {
     let vids: HashMap<String, Vec<SeenVideo>> = load_all_seen_videos()?;

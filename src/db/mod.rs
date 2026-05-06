@@ -87,7 +87,7 @@ pub async fn check_state(mode: &RunMode) {
 
     match mode {
         RunMode::Login => {}
-        RunMode::Default => {
+        RunMode::Default | RunMode::Dev => {
             if !cookies_have_any(&cookies_path) {
                 println!("No TikTok login detected, starting login flow.");
                 if let Err(e) = login().await {

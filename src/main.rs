@@ -21,6 +21,7 @@ use tokio::time::{sleep, Duration};
 pub enum RunMode {
     Login,
     Default,
+    Dev,
 }
 
 fn print_usage_and_exit() -> ! {
@@ -28,6 +29,9 @@ fn print_usage_and_exit() -> ! {
     eprintln!("  no args = default mode (auto login on first run if needed)");
     eprintln!(
         "  login   = explicitly run login flow (for switching accounts or refreshing cookies)"
+    );
+    eprintln!(
+        "  dev     = default mode with visible browser windows for debugging"
     );
     process::exit(1);
 }
@@ -37,6 +41,7 @@ fn parse_args() -> RunMode {
     if let Some(arg) = args.get(1) {
         match arg.as_str() {
             "login" => RunMode::Login,
+            "dev" => RunMode::Dev,
             _ => print_usage_and_exit(),
         }
     } else {
@@ -56,7 +61,9 @@ fn print_how_to_use_and_exit(reason: &str) -> ! {
     eprintln!(
         "     - Default mode: poll for new videos + download pending using your saved login."
     );
-    eprintln!("  4) cargo run login");
+    eprintln!("  4) cargo run dev");
+    eprintln!("     - Debug mode: run default loop but show browser windows.");
+    eprintln!("  5) cargo run login");
     eprintln!("     - Explicitly run the login flow to switch accounts or refresh cookies.");
     process::exit(1);
 }
@@ -221,12 +228,16 @@ fn reconcile_account_state(account: &Account, new_count: i64, unavailable: i64) 
 async fn main() {
     let mode = parse_args();
     println!("Run Mode:{:?}", mode);
+    match mode {
+        RunMode::Dev => env::set_var("TTA_SHOW_BROWSER", "1"),
+        _ => env::remove_var("TTA_SHOW_BROWSER"),
+    }
     check_state(&mode).await;
     match mode {
         RunMode::Login => login().await.unwrap_or_else(|e| {
             let msg = format!("Error logging in: {}", e);
             log(Event::new(msg.clone(), LogLevel::CriticalFail));
         }),
-        RunMode::Default => default_loop().await,
+        RunMode::Default | RunMode::Dev => default_loop().await,
     }
 }

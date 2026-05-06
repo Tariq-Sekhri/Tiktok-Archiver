@@ -214,9 +214,13 @@ fn tiktok_profile_path() -> PathBuf {
 pub fn launch_browser(url: &str, mode: CookiesMode, headless:bool) -> Result<BrowserSession> {
     let profile_dir = match mode {
         CookiesMode::Persistent => {
-            let p = tiktok_profile_path();
-            fs::create_dir_all(&p)?;
-            Some(p)
+            if headless {
+                let p = tiktok_profile_path();
+                fs::create_dir_all(&p)?;
+                Some(p)
+            } else {
+                None
+            }
         }
         CookiesMode::None => None,
     };

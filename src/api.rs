@@ -21,17 +21,20 @@ fn parse_rehydration(html: &str) -> Option<Value> {
     serde_json::from_str(json_str).ok()
 }
 
-pub async fn get_new_count(username: &str) -> Result<i64> {
-    let html = &fetch_html(username).await?;
+pub fn video_count_from_html(html: &str) -> Result<i64> {
     let data = parse_rehydration(html)
-        // .ok_or_else(|| anyhow::anyhow!("Failed to parse rehydration: html dump({})", html))?;
-        .ok_or_else(|| anyhow::anyhow!("Failed to parse rehydration" ))?;
+        .ok_or_else(|| anyhow::anyhow!("Failed to parse rehydration: html dump({})", html))?;
     let video_count = data
         .pointer("/__DEFAULT_SCOPE__/webapp.user-detail/userInfo/stats/videoCount")
         .ok_or_else(|| anyhow::anyhow!("Error getting video count"))?;
     video_count
         .as_i64()
         .ok_or_else(|| anyhow::anyhow!("failed to parse video count as i64"))
+}
+
+pub async fn get_new_count(username: &str) -> Result<i64> {
+    let html = &fetch_html(username).await?;
+    video_count_from_html(html)
 }
 
 

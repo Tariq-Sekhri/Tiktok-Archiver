@@ -6,7 +6,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 use crate::db::browser::{launch_browser, load_cookie_params, save_cookies, cookie_to_param, CookiesMode, scroll_to_bottom};
 use crate::db::account::Account;
-use crate::db::seen_video::SeenVideo;
+use crate::db::video::Video;
 
 const WAIT_AFTER_LOAD_S: u64 = 2;
 const SHOW_BROWSER_ENV: &str = "TTA_SHOW_BROWSER";
@@ -15,7 +15,7 @@ fn discovery_headless() -> bool {
     !matches!(env::var(SHOW_BROWSER_ENV).as_deref(), Ok("1"))
 }
 
-pub async fn first_discovery(username:String) -> Result<(Account, Vec<SeenVideo>)> {
+pub async fn first_discovery(username:String) -> Result<(Account, Vec<Video>)> {
     let session = launch_browser(&format!("https://www.tiktok.com/@{}", &username), CookiesMode::Persistent, discovery_headless())?;
     scroll_to_bottom(&session)?;
     let html = session.tab.get_content().context("get_content")?;
@@ -59,12 +59,13 @@ pub async fn login() -> Result<()> {
     Ok(())
 }
 
-pub async fn fetch_newest_videos(account: &Account) -> Result<Vec<SeenVideo>> {
+pub async fn fetch_newest_videos(account: &Account) -> Result<Vec<Video>> {
     let url = format!("https://www.tiktok.com/@{}", account.name);
     let session = launch_browser(&url, CookiesMode::Persistent, discovery_headless())?;
     sleep(Duration::from_secs(WAIT_AFTER_LOAD_S)).await;
     videos_from_anchor_links(&session.tab.get_content()?, &account.name)
 }
+
 
 
 

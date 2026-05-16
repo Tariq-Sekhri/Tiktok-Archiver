@@ -1,9 +1,9 @@
-pub mod seen_video;
 pub mod account;
 pub mod browser;
 pub mod logger;
 pub mod config;
 pub mod critical_alert;
+pub mod video;
 
 use std::{fs, path::{PathBuf, Path}};
 use std::collections::{HashMap, HashSet};
@@ -13,7 +13,6 @@ use std::os::windows::process::CommandExt;
 use std::sync::OnceLock;
 use crate::{print_how_to_use_and_exit, RunMode};
 use crate::db::browser::cookies_have_any;
-use crate::db::seen_video::{append_seen_videos, save_all_seen_videos, seen_videos_file};
 use crate::db::config::{load_config, save_config, account_name, is_tracked, Config};
 use crate::db::account::{account_file, add_account, load_accounts, update_account_state};
 use crate::db::logger::{log, Event, LogLevel};
@@ -21,6 +20,7 @@ use anyhow::Result;
 use anyhow::anyhow;
 use crate::discover::{first_discovery, login};
 use tokio::io::AsyncWriteExt;
+use crate::db::video::{append_videos, save_all, videos_file, FavVideos, SeenVideos};
 
 static YT_DLP_READY: OnceLock<()> = OnceLock::new();
 
@@ -171,9 +171,9 @@ async fn config_and_accounts_sync(config: &mut Config) {
                         ),
                         LogLevel::Info,
                     ));
-                    if append_seen_videos(&acc.name.to_string(), &vids).is_err() {
+                    if append_videos::<SeenVideos>(&acc.name.to_string(), &vids).is_err() {
                         println!("Error Appending");
-                        if let Err(e) = save_all_seen_videos(&HashMap::from([(acc.name.clone(), vids.clone())])) {
+                        if let Err(e) = save_all::<SeenVideos>(&HashMap::from([(acc.name.clone(), vids.clone())])) {
                             print_how_to_use_and_exit(&format!("Failed to save seen videos: {}", e));
                         }
                     };
@@ -235,10 +235,15 @@ async fn config_and_accounts_sync(config: &mut Config) {
     }
 }
 
+
+
 fn general_check() -> (PathBuf, Config) {
     let state_dir = state_dir();
 
-    if let Err(e) = seen_videos_file() {
+    if let Err(e) = videos_file::<FavVideos>() {
+        print_how_to_use_and_exit(&format!("Failed to init fav_videos.json: {}", e));
+    }
+    if let Err(e) = videos_file::<SeenVideos>() {
         print_how_to_use_and_exit(&format!("Failed to init seen_videos.json: {}", e));
     }
     if let Err(e) = account_file() {

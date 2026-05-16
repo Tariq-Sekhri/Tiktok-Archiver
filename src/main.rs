@@ -6,9 +6,7 @@ mod download;
 use crate::db::account::{load_tracked_accounts, update_account_state, Account, CountEvent};
 use crate::db::check_state;
 use crate::db::logger::{log, Event, LogLevel};
-use crate::db::seen_video::{
-    append_seen_videos, load_all_seen_videos, total_seen_videos, SeenVideo,
-};
+use crate::db::video::{total_videos, Video,  load_all, SeenVideos, append_videos};
 use crate::discover::fetch_newest_videos;
 use crate::download::download_pending;
 use api::get_new_count;
@@ -16,6 +14,7 @@ use discover::login;
 use std::io::IsTerminal;
 use std::{env, io, io::Write, process};
 use tokio::time::{sleep, Duration};
+use crate::db::browser::{launch_browser, CookiesMode};
 use crate::db::config::load_config;
 
 #[derive(Debug)]
@@ -105,7 +104,7 @@ async fn default_loop() {
                 }
             };
 
-            let seen_map = match load_all_seen_videos() {
+            let seen_map = match load_all::<SeenVideos>() {
                 Ok(m) => m,
                 Err(e) => {
                     let msg = format!("{}: load_all_seen_videos failed: {}", account.name, e);
@@ -114,7 +113,7 @@ async fn default_loop() {
                 }
             };
 
-            let existing_videos: Vec<SeenVideo> = match seen_map.get(&account.name) {
+            let existing_videos: Vec<Video> = match seen_map.get(&account.name) {
                 Some(v) => v.clone(),
                 None => {
                     log(Event::new(
@@ -131,7 +130,7 @@ async fn default_loop() {
             let existing_ids: std::collections::HashSet<i64> =
                 existing_videos.iter().map(|v| v.video_id).collect();
 
-            let (unavailable, new_videos): (i64, Vec<SeenVideo>) =
+            let (unavailable, new_videos): (i64, Vec<Video>) =
                 match CountEvent::observe(account.count, new_count) {
                     CountEvent::Same => {
                         println!("{}: Same", account.name);
@@ -148,7 +147,7 @@ async fn default_loop() {
                                 continue;
                             }
                         };
-                        let new_v: Vec<SeenVideo> = fetched_videos
+                        let new_v: Vec<Video> = fetched_videos
                             .into_iter()
                             .filter(|v| !existing_ids.contains(&v.video_id))
                             .collect();
@@ -167,7 +166,7 @@ async fn default_loop() {
                 };
 
             if !new_videos.is_empty() {
-                if let Err(e) = append_seen_videos(&account.name, &new_videos) {
+                if let Err(e) = append_videos::<SeenVideos>(&account.name, &new_videos) {
                     let msg = format!("{}: append_seen_videos failed: {}", account.name, e);
                     log(Event::new(msg, LogLevel::CriticalFail));
                     continue;
@@ -184,7 +183,12 @@ async fn default_loop() {
         }
         if  let Ok(config) = load_config() {
             if config.download_fav {
-                
+                let tab = launch_browser("https://www.tiktok.com",  CookiesMode::Persistent ,  false ).unwrap();
+
+                // find videos
+                // go until seen
+                // download
+
             }
         }else{
             log(Event::new("Config Failed to load".to_string(), LogLevel::Error));
@@ -194,7 +198,7 @@ async fn default_loop() {
 }
 
 fn reconcile_account_state(account: &Account, new_count: i64, unavailable: i64) {
-    let totals = match total_seen_videos() {
+    let totals = match total_videos::<SeenVideos>() {
         Ok(t) => t,
         Err(e) => {
             let msg = format!("{}: total_seen_videos failed: {}", account.name, e);
@@ -233,6 +237,10 @@ fn reconcile_account_state(account: &Account, new_count: i64, unavailable: i64) 
 
 #[tokio::main]
 async fn main() {
+    // let tab = launch_browser("https://www.tiktok.com",  CookiesMode::Persistent ,  false ).unwrap();
+    // println!("Press Enter To Exit:");
+    // let mut asd = String::new();
+    // io::stdin().read_line(&mut asd).unwrap();
     let mode = parse_args();
     println!("Run Mode:{:?}", mode);
     match mode {

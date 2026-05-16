@@ -1,5 +1,4 @@
 use crate::db::browser::cookies_path;
-use crate::db::seen_video::{DownloadStatus, SeenVideo};
 use anyhow::{Context, Result};
 use regex::Regex;
 use reqwest::{
@@ -8,6 +7,7 @@ use reqwest::{
 };
 use serde_json::Value;
 use std::{fs, time::Duration};
+use crate::db::video::{DownloadStatus, Video};
 
 fn parse_rehydration(html: &str) -> Option<Value> {
     let re = Regex::new(
@@ -58,7 +58,7 @@ async fn fetch_html(username: &str) -> Result<String> {
         .with_context(|| format!("Fetch text error: {}", url))
 }
 
-pub fn videos_from_anchor_links(html: &str, username: &str) -> Result<Vec<SeenVideo>> {
+pub fn videos_from_anchor_links(html: &str, username: &str) -> Result<Vec<Video>> {
     let re = Regex::new(r#"/@([\w.]+)/video/(\d+)"#)?;
     let mut seen = std::collections::HashSet::new();
     let mut ids = Vec::new();
@@ -75,12 +75,10 @@ pub fn videos_from_anchor_links(html: &str, username: &str) -> Result<Vec<SeenVi
     ids.into_iter()
         .map(|id| {
             let parsed_id = id.parse::<i64>()?;
-            Ok(SeenVideo::new(
+            Ok(Video::new(
                 format!("https://www.tiktok.com/@{}/video/{}", username, parsed_id),
                 parsed_id,
                 username.to_string(),
-                DownloadStatus::NotDownloaded,
-                true,
             ))
         })
         .collect::<Result<Vec<_>>>()
@@ -150,4 +148,7 @@ fn get_headers_reqwest(with_cookies: bool) -> HeaderMap {
     headers
 }
 
+pub fn get_fav_count(){
+    
+}
 

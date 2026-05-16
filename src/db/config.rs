@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 pub struct Config{
     pub accounts:Vec<String>,
     pub download_dir:String,
+    #[serde(default)]   
+    pub download_fav:bool
 }
 
 

@@ -16,6 +16,7 @@ use discover::login;
 use std::io::IsTerminal;
 use std::{env, io, io::Write, process};
 use tokio::time::{sleep, Duration};
+use crate::db::config::load_config;
 
 #[derive(Debug)]
 pub enum RunMode {
@@ -181,7 +182,13 @@ async fn default_loop() {
             }
             sleep(Duration::from_secs(1)).await;
         }
-
+        if  let Ok(config) = load_config() {
+            if config.download_fav {
+                
+            }
+        }else{
+            log(Event::new("Config Failed to load".to_string(), LogLevel::Error));
+        }
         timeout(60u8).await;
     }
 }

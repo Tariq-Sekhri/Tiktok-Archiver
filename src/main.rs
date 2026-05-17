@@ -86,6 +86,7 @@ async fn default_loop() {
     loop {
         let accounts = match load_tracked_accounts() {
             Ok(accounts) => accounts,
+
             Err(e) => {
                 log(Event::new(
                     format!("Failed to load accounts: {}", e),
@@ -95,15 +96,16 @@ async fn default_loop() {
                 continue;
             }
         };
-
+        println!("{:?}", accounts);
         for account in accounts {
             let new_count = match get_new_count(&account.name).await {
                 Ok(n) => n,
-                Err(_) => {
-                    continue;
+                Err(e) => {
+                    eprintln!("error getting count{e}");
+                    continue ;
                 }
             };
-
+            println!("{} Count: {new_count}", account.name);
             let seen_map = match load_all::<SeenVideos>() {
                 Ok(m) => m,
                 Err(e) => {
@@ -243,10 +245,11 @@ async fn main() {
     // io::stdin().read_line(&mut asd).unwrap();
     let mode = parse_args();
     println!("Run Mode:{:?}", mode);
-    match mode {
-        RunMode::Dev => env::set_var("TTA_SHOW_BROWSER", "1"),
-        _ => env::remove_var("TTA_SHOW_BROWSER"),
-    }
+    env::set_var("TTA_SHOW_BROWSER", "1");
+    // match mode {
+    //     RunMode::Dev => env::set_var("TTA_SHOW_BROWSER", "1"),
+    //     _ => env::remove_var("TTA_SHOW_BROWSER"),
+    // }
     check_state(&mode).await;
     match mode {
         RunMode::Login => login().await.unwrap_or_else(|e| {

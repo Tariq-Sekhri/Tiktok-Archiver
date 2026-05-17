@@ -1,19 +1,13 @@
 use crate::api::{video_count_from_html, videos_from_anchor_links};
 use anyhow::{Context, Result};
 use std::io;
-use std::env;
 use std::time::Duration;
 use tokio::time::sleep;
-use crate::db::browser::{launch_browser, load_cookie_params, save_cookies, cookie_to_param, CookiesMode, scroll_to_bottom};
+use crate::db::browser::{discovery_headless, launch_browser, load_cookie_params, save_cookies, cookie_to_param, CookiesMode, scroll_to_bottom};
 use crate::db::account::Account;
 use crate::db::video::Video;
 
 const WAIT_AFTER_LOAD_S: u64 = 2;
-const SHOW_BROWSER_ENV: &str = "TTA_SHOW_BROWSER";
-
-fn discovery_headless() -> bool {
-    !matches!(env::var(SHOW_BROWSER_ENV).as_deref(), Ok("1"))
-}
 
 pub async fn first_discovery(username:String) -> Result<(Account, Vec<Video>)> {
     let session = launch_browser(&format!("https://www.tiktok.com/@{}", &username), CookiesMode::Persistent, discovery_headless())?;

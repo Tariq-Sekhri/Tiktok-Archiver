@@ -1,4 +1,4 @@
-use crate::db::browser::{discovery_headless, launch_browser, BrowserSession, CookiesMode};
+use crate::db::browser::{discovery_headless, launch_browser, BrowserSession};
 use anyhow::{anyhow, Context, Result};
 use regex::Regex;
 use serde_json::Value;
@@ -47,7 +47,7 @@ fn wait_for_profile_page(session: &BrowserSession, username: &str) -> Result<()>
 
 pub async fn get_new_count(username: &str) -> Result<i64> {
     let url = format!("https://www.tiktok.com/@{}", username);
-    let session = launch_browser(&url, CookiesMode::Persistent, discovery_headless())?;
+    let session = launch_browser(&url, discovery_headless())?;
     wait_for_profile_page(&session, username)?;
     let html = session.tab.get_content().context("get_content")?;
     video_count_from_html(&html)

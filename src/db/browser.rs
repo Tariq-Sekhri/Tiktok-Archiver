@@ -29,11 +29,7 @@ pub fn discovery_headless() -> bool {
     !cfg!(debug_assertions)
 }
 
-pub enum CookiesMode {
-    Persistent,
-    Profile,
-    None,
-}
+
 
 pub struct BrowserSession {
     _browser: Browser,
@@ -438,30 +434,22 @@ fn tiktok_profile_path() -> PathBuf {
     state_dir().join("tiktok_profile")
 }
 
-pub fn launch_browser(url: &str, mode: CookiesMode, headless:bool) -> Result<BrowserSession> {
-    let cookie_params = if matches!(mode, CookiesMode::Persistent) {
-        load_cookie_params()?
-    } else {
-        Vec::new()
-    };
+pub fn launch_browser(url: &str, headless:bool) -> Result<BrowserSession> {
+    let cookie_params =   load_cookie_params()?;
 
-    let profile_dir = match mode {
-        CookiesMode::Persistent | CookiesMode::Profile => {
+
+    let profile_dir = {
             let p = tiktok_profile_path();
             fs::create_dir_all(&p)?;
             Some(p)
-        }
-        CookiesMode::None => None,
     };
-
-    if matches!(mode, CookiesMode::Persistent) {
         eprintln!(
             "[Browser] state={} profile={} cookies_to_inject={}",
             state_dir().display(),
             tiktok_profile_path().display(),
             cookie_params.len()
         );
-    }
+
 
     let mut builder = browser::LaunchOptionsBuilder::default();
     builder.headless(headless);
@@ -509,7 +497,7 @@ pub fn launch_browser(url: &str, mode: CookiesMode, headless:bool) -> Result<Bro
 
     std::thread::sleep(Duration::from_secs(WAIT_AFTER_LOAD_S));
 
-    if matches!(mode, CookiesMode::Persistent) && inject_from_file {
+    if  inject_from_file {
         let applied = tab.get_cookies().context("get_cookies after launch")?;
         if !has_session_cookie(&applied) {
             return Err(anyhow!(

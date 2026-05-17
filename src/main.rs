@@ -14,7 +14,7 @@ use discover::login;
 use std::io::IsTerminal;
 use std::{env, io, io::Write, process};
 use tokio::time::{sleep, Duration};
-use crate::db::browser::{launch_browser, CookiesMode};
+use crate::db::browser::{launch_browser};
 use crate::db::config::load_config;
 
 #[derive(Debug)]
@@ -184,7 +184,7 @@ async fn default_loop() {
         }
         if  let Ok(config) = load_config() {
             if config.download_fav {
-                let tab = launch_browser("https://www.tiktok.com",  CookiesMode::Persistent ,  false ).unwrap();
+                let tab = launch_browser("https://www.tiktok.com", false ).unwrap();
 
                 // find videos
                 // go until seen

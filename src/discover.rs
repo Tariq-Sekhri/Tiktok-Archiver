@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 use crate::db::browser::{
     clear_tiktok_profile, cookie_params_have_session, cookie_to_param, discovery_headless,
-    launch_browser, load_cookie_params, save_cookies, CookiesMode, scroll_to_bottom, TIKTOK_ORIGIN,
+    launch_browser, load_cookie_params, save_cookies, scroll_to_bottom, TIKTOK_ORIGIN,
 };
 use crate::db::account::Account;
 use crate::db::video::Video;
@@ -13,7 +13,7 @@ use crate::db::video::Video;
 const WAIT_AFTER_LOAD_S: u64 = 2;
 
 pub async fn first_discovery(username:String) -> Result<(Account, Vec<Video>)> {
-    let session = launch_browser(&format!("https://www.tiktok.com/@{}", &username), CookiesMode::Persistent, discovery_headless())?;
+    let session = launch_browser(&format!("https://www.tiktok.com/@{}", &username), discovery_headless())?;
     scroll_to_bottom(&session)?;
     let html = session.tab.get_content().context("get_content")?;
     let new_vids = videos_from_anchor_links(&html, &username)?;
@@ -48,7 +48,6 @@ pub async fn login() -> Result<()> {
 
     let session = launch_browser(
         "https://www.tiktok.com/login/qrcode",
-        CookiesMode::Profile,
         false,
     )?;
     println!("Log in in the browser window, then wait until you see your feed.");
@@ -86,7 +85,7 @@ pub async fn login() -> Result<()> {
 
 pub async fn fetch_newest_videos(account: &Account) -> Result<Vec<Video>> {
     let url = format!("https://www.tiktok.com/@{}", account.name);
-    let session = launch_browser(&url, CookiesMode::Persistent, discovery_headless())?;
+    let session = launch_browser(&url,  discovery_headless())?;
     sleep(Duration::from_secs(WAIT_AFTER_LOAD_S)).await;
     videos_from_anchor_links(&session.tab.get_content()?, &account.name)
 }

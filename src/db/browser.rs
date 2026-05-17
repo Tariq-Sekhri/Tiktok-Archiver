@@ -480,10 +480,6 @@ pub fn launch_browser(url: &str, headless:bool) -> Result<BrowserSession> {
             .with_context(|| format!("Timed out waiting for {} before cookie injection", url))?;
         std::thread::sleep(Duration::from_millis(500));
         inject_cookies(&tab, cookie_params, url)?;
-        tab.navigate_to(url)
-            .with_context(|| format!("Failed to reload {} after cookie injection", url))?;
-        tab.wait_until_navigated()
-            .with_context(|| format!("Timed out waiting for reload of {}", url))?;
     } else {
         tab.navigate_to(url)
             .with_context(|| format!("Failed to navigate TikTok tab to URL: {}", url))

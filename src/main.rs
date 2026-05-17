@@ -105,7 +105,6 @@ async fn default_loop() {
                     continue ;
                 }
             };
-            println!("{} Count: {new_count}", account.name);
             let seen_map = match load_all::<SeenVideos>() {
                 Ok(m) => m,
                 Err(e) => {
@@ -245,11 +244,11 @@ async fn main() {
     // io::stdin().read_line(&mut asd).unwrap();
     let mode = parse_args();
     println!("Run Mode:{:?}", mode);
-    env::set_var("TTA_SHOW_BROWSER", "1");
-    // match mode {
-    //     RunMode::Dev => env::set_var("TTA_SHOW_BROWSER", "1"),
-    //     _ => env::remove_var("TTA_SHOW_BROWSER"),
-    // }
+    match mode {
+        RunMode::Default | RunMode::Dev | RunMode::Login => {
+            env::set_var("TTA_SHOW_BROWSER", "1");
+        }
+    }
     check_state(&mode).await;
     match mode {
         RunMode::Login => login().await.unwrap_or_else(|e| {

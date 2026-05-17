@@ -12,7 +12,7 @@ use std::process::Command;
 use std::os::windows::process::CommandExt;
 use std::sync::OnceLock;
 use crate::{print_how_to_use_and_exit, RunMode};
-use crate::db::browser::cookies_have_any;
+use crate::db::browser::{cookies_have_any, log_auth_storage_status};
 use crate::db::config::{load_config, save_config, account_name, is_tracked, Config};
 use crate::db::account::{account_file, add_account, load_accounts, update_account_state};
 use crate::db::logger::{log, Event, LogLevel};
@@ -24,24 +24,42 @@ use crate::db::video::{append_videos, save_all, videos_file, FavVideos, SeenVide
 
 static YT_DLP_READY: OnceLock<()> = OnceLock::new();
 
-pub fn state_dir() -> PathBuf {
-    let base_dir = if cfg!(debug_assertions) {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-    } else {
-        let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
-        exe.parent().unwrap_or_else(|| Path::new(".")).to_path_buf()
-    };
-    let state_dir = base_dir.join("state");
-    if !state_dir.exists() {
-        if let Err(e) = fs::create_dir_all(&state_dir) {
-            print_how_to_use_and_exit(&format!(
-                "Failed to create state directory {}: {}",
-                state_dir.display(),
-                e
-            ));
-        }
+fn ensure_state_dir(state_dir: &Path) {
+    if state_dir.exists() {
+        return;
     }
-    state_dir
+    if let Err(e) = fs::create_dir_all(state_dir) {
+        print_how_to_use_and_exit(&format!(
+            "Failed to create state directory {}: {}",
+            state_dir.display(),
+            e
+        ));
+    }
+}
+
+pub fn state_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("TTA_STATE_DIR") {
+        let state_dir = PathBuf::from(dir);
+        ensure_state_dir(&state_dir);
+        return state_dir;
+    }
+
+    let manifest_state = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("state");
+
+    if cfg!(debug_assertions) {
+        ensure_state_dir(&manifest_state);
+        return manifest_state;
+    }
+
+    if manifest_state.exists() {
+        ensure_state_dir(&manifest_state);
+        return manifest_state;
+    }
+
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+    let exe_state = exe.parent().unwrap_or_else(|| Path::new(".")).join("state");
+    ensure_state_dir(&exe_state);
+    exe_state
 }
 
 pub fn ensure_file(path: &PathBuf, default_contents: &str) -> Result<()> {
@@ -86,8 +104,11 @@ pub async fn check_state(mode: &RunMode) {
     let (cookies_path, mut config) = general_check();
 
     match mode {
-        RunMode::Login => {}
+        RunMode::Login => {
+            log_auth_storage_status();
+        }
         RunMode::Default | RunMode::Dev => {
+            log_auth_storage_status();
             if !cookies_have_any(&cookies_path) {
                 println!("No TikTok login detected, starting login flow.");
                 if let Err(e) = login().await {

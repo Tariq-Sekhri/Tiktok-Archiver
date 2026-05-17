@@ -1,13 +1,18 @@
 use crate::db::{atomic_write_text, ensure_file, state_dir};
 use anyhow::{anyhow, Context};
 use anyhow::Result;
-use headless_chrome::protocol::cdp::Network::{CookieParam, CookieSameSite};
+use headless_chrome::protocol::cdp::Network::{Cookie, CookieParam, CookieSameSite, SetCookies};
 use headless_chrome::{browser, Browser};
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+
+pub const TIKTOK_ORIGIN: &str = "https://www.tiktok.com";
+const COOKIE_INJECT_CHUNK: usize = 40;
+const SESSION_COOKIE_NAMES: &[&str] = &["sid_tt", "sessionid", "sid_guard", "uid_tt", "tt_session_tlb_tag"];
 
 
 pub const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -15,11 +20,18 @@ pub const SHOW_BROWSER_ENV: &str = "TTA_SHOW_BROWSER";
 const WAIT_AFTER_LOAD_S: u64 = 2;
 
 pub fn discovery_headless() -> bool {
-    !matches!(std::env::var(SHOW_BROWSER_ENV).as_deref(), Ok("1"))
+    if matches!(std::env::var(SHOW_BROWSER_ENV).as_deref(), Ok("1")) {
+        return false;
+    }
+    if matches!(std::env::var(SHOW_BROWSER_ENV).as_deref(), Ok("0")) {
+        return true;
+    }
+    !cfg!(debug_assertions)
 }
 
 pub enum CookiesMode {
     Persistent,
+    Profile,
     None,
 }
 
@@ -93,11 +105,7 @@ fn build_cookie_param(
     CookieParam {
         name,
         value,
-        url: if domain.is_none() {
-            Some("https://www.tiktok.com".to_string())
-        } else {
-            None
-        },
+        url: None,
         domain,
         path: path.or(Some("/".to_string())),
         secure,
@@ -110,6 +118,92 @@ fn build_cookie_param(
         source_port: None,
         partition_key: None,
     }
+}
+
+fn to_injection_param(p: CookieParam, cookie_url: &str) -> CookieParam {
+    let same_site = p.same_site.clone();
+    let mut secure = p.secure;
+    if same_site == Some(CookieSameSite::None) {
+        secure = Some(true);
+    }
+    CookieParam {
+        name: p.name,
+        value: p.value,
+        url: Some(cookie_url.to_string()),
+        domain: None,
+        path: p.path.or(Some("/".to_string())),
+        secure,
+        http_only: p.http_only,
+        same_site,
+        expires: p.expires,
+        priority: None,
+        same_party: None,
+        source_scheme: None,
+        source_port: None,
+        partition_key: None,
+    }
+}
+
+fn has_session_cookie(cookies: &[Cookie]) -> bool {
+    cookies
+        .iter()
+        .any(|c| SESSION_COOKIE_NAMES.contains(&c.name.as_str()))
+}
+
+pub fn cookie_params_have_session(params: &[CookieParam]) -> bool {
+    params
+        .iter()
+        .any(|p| SESSION_COOKIE_NAMES.contains(&p.name.as_str()))
+}
+
+pub fn clear_tiktok_profile() -> Result<()> {
+    let p = tiktok_profile_path();
+    if p.exists() {
+        fs::remove_dir_all(&p).context("failed to clear tiktok_profile")?;
+    }
+    Ok(())
+}
+
+fn inject_cookies(tab: &headless_chrome::Tab, params: Vec<CookieParam>, cookie_url: &str) -> Result<()> {
+    if params.is_empty() {
+        return Ok(());
+    }
+    let cookies: Vec<CookieParam> = params
+        .into_iter()
+        .map(|p| to_injection_param(p, cookie_url))
+        .collect();
+    let expected: HashSet<String> = cookies.iter().map(|c| c.name.clone()).collect();
+    for chunk in cookies.chunks(COOKIE_INJECT_CHUNK) {
+        tab.call_method(SetCookies {
+            cookies: chunk.to_vec(),
+        })
+        .context("Network.setCookies failed")?;
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    let applied = tab.get_cookies().context("get_cookies after inject")?;
+    let matched = applied
+        .iter()
+        .filter(|c| expected.contains(&c.name))
+        .count();
+    if matched == 0 {
+        return Err(anyhow!(
+            "cookie injection applied 0 of {} saved cookies",
+            expected.len()
+        ));
+    }
+    if !has_session_cookie(&applied) {
+        return Err(anyhow!(
+            "cookie injection missing session cookies (matched {}/{} names)",
+            matched,
+            expected.len()
+        ));
+    }
+    eprintln!(
+        "[Browser] injected cookies: {}/{} names present in browser",
+        matched,
+        expected.len()
+    );
+    Ok(())
 }
 
 pub fn load_cookie_params() -> Result<Vec<CookieParam>> {
@@ -220,7 +314,12 @@ pub fn save_cookies(cookies: &[CookieParam])->Result<()> {
             });
             // sameSite only if set (Playwright: "Strict" | "Lax" | "None"); omit when null
             if let Some(ref s) = c.same_site {
-                obj["sameSite"] = serde_json::json!(s);
+                let label = match s {
+                    CookieSameSite::Strict => "Strict",
+                    CookieSameSite::Lax => "Lax",
+                    CookieSameSite::None => "None",
+                };
+                obj["sameSite"] = serde_json::json!(label);
             }
             obj
         })
@@ -230,7 +329,62 @@ pub fn save_cookies(cookies: &[CookieParam])->Result<()> {
 
     let json_str = serde_json::to_string_pretty(&root)?;
     atomic_write_text(std::path::Path::new(&path), &json_str)?;
+    write_ytdlp_cookie_jar(cookies)?;
     Ok(())
+}
+
+pub fn log_auth_storage_status() {
+    let dir = state_dir();
+    let cookies_path = dir.join("saved_cookies.json");
+    let profile_path = tiktok_profile_path();
+
+    eprintln!("[auth] state directory: {}", dir.display());
+    eprintln!("[auth] cookies file: {}", cookies_path.display());
+
+    if let Ok(meta) = fs::metadata(&cookies_path) {
+        if let Ok(modified) = meta.modified() {
+            if let Ok(duration) = modified.elapsed() {
+                eprintln!(
+                    "[auth] cookies file age: {}h {}m ago",
+                    duration.as_secs() / 3600,
+                    (duration.as_secs() % 3600) / 60
+                );
+            }
+        }
+    }
+
+    match load_cookie_params() {
+        Ok(params) => {
+            eprintln!("[auth] cookies in file: {}", params.len());
+            eprintln!(
+                "[auth] session cookies in file: {}",
+                if cookie_params_have_session(&params) {
+                    "yes"
+                } else {
+                    "no — run `cargo run login`"
+                }
+            );
+        }
+        Err(e) => eprintln!("[auth] could not read cookies file: {}", e),
+    }
+
+    eprintln!(
+        "[auth] chrome profile: {} ({})",
+        profile_path.display(),
+        if profile_path.exists() {
+            "present"
+        } else {
+            "missing — run `cargo run login`"
+        }
+    );
+
+    let alt = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target").join("release").join("state");
+    if alt.exists() && alt != dir {
+        eprintln!(
+            "[auth] WARNING: ignored duplicate state at {} (release build leftover)",
+            alt.display()
+        );
+    }
 }
 
 pub fn cookie_to_param(
@@ -292,14 +446,22 @@ pub fn launch_browser(url: &str, mode: CookiesMode, headless:bool) -> Result<Bro
     };
 
     let profile_dir = match mode {
-        CookiesMode::Persistent if cookie_params.is_empty() => {
+        CookiesMode::Persistent | CookiesMode::Profile => {
             let p = tiktok_profile_path();
             fs::create_dir_all(&p)?;
             Some(p)
         }
-        CookiesMode::Persistent => None,
         CookiesMode::None => None,
     };
+
+    if matches!(mode, CookiesMode::Persistent) {
+        eprintln!(
+            "[Browser] state={} profile={} cookies_to_inject={}",
+            state_dir().display(),
+            tiktok_profile_path().display(),
+            cookie_params.len()
+        );
+    }
 
     let mut builder = browser::LaunchOptionsBuilder::default();
     builder.headless(headless);
@@ -322,25 +484,40 @@ pub fn launch_browser(url: &str, mode: CookiesMode, headless:bool) -> Result<Bro
     tab.set_user_agent(USER_AGENT, Some("en-US,en;q=0.9"), None)
         .context("Failed to set TikTok user agent on tab")?;
 
-    if !cookie_params.is_empty() {
-        tab.navigate_to("https://www.tiktok.com")
-            .with_context(|| "Failed to navigate to tiktok.com for cookie injection")?;
-        std::thread::sleep(Duration::from_millis(1000));
-        tab.set_cookies(cookie_params)
-            .context("Failed to inject saved TikTok cookies into browser")?;
-        tab.navigate_to("https://www.tiktok.com")
-            .context("Failed to reload tiktok.com after cookie injection")?;
+    let inject_from_file = !cookie_params.is_empty();
+    if inject_from_file {
+        tab.navigate_to(url)
+            .with_context(|| format!("Failed to navigate to {} before cookie injection", url))?;
+        tab.wait_until_navigated()
+            .with_context(|| format!("Timed out waiting for {} before cookie injection", url))?;
         std::thread::sleep(Duration::from_millis(500));
+        inject_cookies(&tab, cookie_params, url)?;
+        tab.navigate_to(url)
+            .with_context(|| format!("Failed to reload {} after cookie injection", url))?;
+        tab.wait_until_navigated()
+            .with_context(|| format!("Timed out waiting for reload of {}", url))?;
+    } else {
+        tab.navigate_to(url)
+            .with_context(|| format!("Failed to navigate TikTok tab to URL: {}", url))
+            .map_err(|e| {
+                eprintln!("[Browser] navigate_to error for {}: {:#}", url, e);
+                e
+            })?;
+        tab.wait_until_navigated()
+            .with_context(|| format!("Timed out waiting for navigation to {}", url))?;
     }
 
-    tab.navigate_to(url)
-        .with_context(|| format!("Failed to navigate TikTok tab to URL: {}", url))
-        .map_err(|e| {
-            eprintln!("[Browser] navigate_to error for {}: {:#}", url, e);
-            e
-        })?;
-
     std::thread::sleep(Duration::from_secs(WAIT_AFTER_LOAD_S));
+
+    if matches!(mode, CookiesMode::Persistent) && inject_from_file {
+        let applied = tab.get_cookies().context("get_cookies after launch")?;
+        if !has_session_cookie(&applied) {
+            return Err(anyhow!(
+                "session cookies not present after launch — run `cargo run login` to refresh login (state: {})",
+                state_dir().display()
+            ));
+        }
+    }
 
     Ok(BrowserSession {
         _browser: browser,

@@ -13,6 +13,8 @@ use api::get_new_count;
 use discover::login;
 use std::io::IsTerminal;
 use std::{env, io, io::Write, process};
+use std::fs::File;
+use regex::Regex;
 use tokio::time::{sleep, Duration};
 use crate::db::browser::{launch_browser};
 use crate::db::config::load_config;
@@ -185,6 +187,10 @@ async fn default_loop() {
         if  let Ok(config) = load_config() {
             if config.download_fav {
                 let tab = launch_browser("https://www.tiktok.com", false ).unwrap();
+                //navigate to profile
+                // get fav count
+                // (increase, dereacse, same)
+
 
                 // find videos
                 // go until seen
@@ -238,23 +244,41 @@ fn reconcile_account_state(account: &Account, new_count: i64, unavailable: i64) 
 
 #[tokio::main]
 async fn main() {
-    // let tab = launch_browser("https://www.tiktok.com",  CookiesMode::Persistent ,  false ).unwrap();
-    // println!("Press Enter To Exit:");
-    // let mut asd = String::new();
-    // io::stdin().read_line(&mut asd).unwrap();
-    let mode = parse_args();
-    println!("Run Mode:{:?}", mode);
-    match mode {
-        RunMode::Default | RunMode::Dev | RunMode::Login => {
-            env::set_var("TTA_SHOW_BROWSER", "1");
-        }
-    }
-    check_state(&mode).await;
-    match mode {
-        RunMode::Login => login().await.unwrap_or_else(|e| {
-            let msg = format!("Error logging in: {}", e);
-            log(Event::new(msg.clone(), LogLevel::CriticalFail));
-        }),
-        RunMode::Default | RunMode::Dev => default_loop().await,
-    }
+    let session = launch_browser("https://www.tiktok.com",   false ).unwrap();
+    timeout(3).await;
+    session.tab.wait_for_element(r#"[data-e2e="nav-profile"]"#).expect("didnw wait").click().expect("counlt click");
+    timeout(3).await;
+    session.tab.wait_for_xpath(r#"//span[text()="Favorites"]/ancestor::p[@role="tab"]"#).unwrap().click().unwrap();
+    timeout(10).await;
+    let text = session.tab.wait_for_element("#posts").unwrap().get_inner_text().unwrap();
+
+    let re = Regex::new(r"Posts\s+(\d+)").unwrap();
+    let count: usize = re
+        .captures(&text)
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str().parse())
+        .transpose().unwrap()
+        .unwrap_or(0);
+    println!("{count}");
+
+    // println!("{}", session.tab.get_content().unwrap());
+    println!("Press Enter To Exit:");
+    let mut asd = String::new();
+    io::stdin().read_line(&mut asd).unwrap();
+
+    // let mode = parse_args();
+    // println!("Run Mode:{:?}", mode);
+    // match mode {
+    //     RunMode::Default | RunMode::Dev | RunMode::Login => {
+    //         env::set_var("TTA_SHOW_BROWSER", "1");
+    //     }
+    // }
+    // check_state(&mode).await;
+    // match mode {
+    //     RunMode::Login => login().await.unwrap_or_else(|e| {
+    //         let msg = format!("Error logging in: {}", e);
+    //         log(Event::new(msg.clone(), LogLevel::CriticalFail));
+    //     }),
+    //     RunMode::Default | RunMode::Dev => default_loop().await,
+    // }
 }

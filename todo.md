@@ -1,7 +1,8 @@
-add ablity to download favs
+- update logger (log.info, log.error, log.ciritalError)
+- add ablity to download favs
 
-update config 
-support legeacy config and update it 
-add check if download fav true then download all the fav and check 
+get fav count 
+if gone up get video link 
 
-
+store where dulicate? fav_videos 
+downlaod where downloads/fav

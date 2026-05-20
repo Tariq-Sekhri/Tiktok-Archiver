@@ -65,7 +65,7 @@ pub struct Video {
     pub video_id: i64,
     pub username: String,
     #[serde(default)]
-    pub is_fav:bool,
+    pub is_fav: bool,
     pub download_status: DownloadStatus,
     pub source_available: bool,
     #[serde(
@@ -77,12 +77,12 @@ pub struct Video {
 }
 
 impl Video{
-    pub fn new(url:String, video_id:i64, username:String, is_fav:bool)->Self{
+    pub fn new(url:String, video_id:i64, username:String)->Self{
         Self{
             url,
             video_id,
-            is_fav,
             username,
+            is_fav: false,
             download_status: DownloadStatus::NotDownloaded,
             source_available: true,
             download_date: None,

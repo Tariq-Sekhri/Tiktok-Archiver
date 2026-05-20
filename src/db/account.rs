@@ -3,7 +3,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use crate::db::{atomic_write_text, ensure_file, state_dir};
 use crate::db::config::{load_config, is_tracked};
-use crate::db::logger::{log, Event, LogLevel};
+use crate::db::logger::Log;
 use anyhow::{anyhow, Context, Result};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -107,12 +107,9 @@ pub fn load_accounts() -> Result<Vec<Account>> {
                 return Err(anyhow!(be).context(format!("error deserializing accounts: {}", e)));
             }
             atomic_write_text(Path::new(&path), "[]\n")?;
-            log(Event::new(
-                format!(
-                    "accounts.json was invalid; backed up to state/accounts.json.corrupt.* and reset: {}",
-                    e
-                ),
-                LogLevel::Error,
+            Log::error(format!(
+                "accounts.json was invalid; backed up to state/accounts.json.corrupt.* and reset: {}",
+                e
             ));
             Ok(Vec::new())
         }

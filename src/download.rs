@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 #[cfg(windows)]
@@ -7,51 +6,89 @@ use anyhow::anyhow;
 use crate::db::browser::{load_cookie_params, write_ytdlp_cookie_jar};
 use anyhow::Result;
 use crate::db::config::load_config;
-use crate::db::logger::{log, Event, LogLevel};
+use crate::db::logger::Log;
 use crate::db::video::{load_all, update_download_status, update_source_available, DownloadStatus, Video};
 
 pub const VIDEO_EXT: &str = "mp4";
 
 fn video_file_path(username: &str, video_id: i64) -> Result<PathBuf> {
     let mut p = PathBuf::from(load_config()?.download_dir);
-    p.push(username);
+    if username == "favorite" {
+        p.push("favs");
+    } else {
+        p.push(username);
+    }
     p.push(format!("{}.{}", video_id, VIDEO_EXT));
     Ok(p)
 }
 fn have_video_on_disk(vid: &Video) -> Result<bool> {
-    Ok(video_file_path(&vid.username, vid.video_id)?.exists())
+    let path_user = if vid.is_fav { "favorite" } else { &vid.username };
+    Ok(video_file_path(path_user, vid.video_id)?.exists())
 }
 
 
 fn download_videos(vids:&Vec<Video>)->Result<()>{
     for vid in vids {
+        let bucket = if vid.is_fav { "favorite" } else { &vid.username };
 
         if have_video_on_disk(&vid).unwrap_or(false) {
-            log(Event::new(format!("had {} on disk", vid.video_id), LogLevel::Info));
-            update_download_status(&vid.username, vid.video_id, DownloadStatus::Downloaded)?;
+            Log::info(format!("had {} on disk", vid.video_id));
+            update_download_status(bucket, vid.video_id, DownloadStatus::Downloaded)?;
             continue;
         }
         if !vid.source_available || vid.download_status == DownloadStatus::Downloaded {
-            log(Event::new(format!("Video Unavailable:{}", vid.video_id), LogLevel::Info));
+            Log::info(format!("Video Unavailable:{}", vid.video_id));
             continue;
         }
 
         println!("Downloading:{}", vid.video_id);
         if let Err(e) = download_video(&vid) {
-            update_download_status(&vid.username, vid.video_id, DownloadStatus::DownloadFailed)?;
-            if is_fatal_source_error(&e.to_string()) {
-                update_source_available(&vid.username, vid.video_id, false)?;
+            let raw = e.to_string();
+            let (user_msg, mark_unavailable) = classify_download_failure(&raw, vid);
+            update_download_status(bucket, vid.video_id, DownloadStatus::DownloadFailed)?;
+            if mark_unavailable {
+                update_source_available(bucket, vid.video_id, false)?;
             }
-            log(Event::new(format!("Error Downloading vid:{:?}:({})", vid, e), LogLevel::Error));
+            Log::error(user_msg.clone());
             continue;
         };
-        log(Event::new(format!("Downloaded vid:{:?}:", vid), LogLevel::Info));
-        update_download_status(&vid.username, vid.video_id, DownloadStatus::Downloaded)?;
+        Log::info(format!("Downloaded vid:{:?}:", vid));
+        update_download_status(bucket, vid.video_id, DownloadStatus::Downloaded)?;
     }
     Ok(())
 }
 
+fn is_age_restricted_error(error: &str) -> bool {
+    let msg = error.to_ascii_lowercase();
+    msg.contains("age-restricted")
+        || msg.contains("age restricted")
+        || msg.contains("this post is age-restricted")
+}
+
+fn age_restricted_user_message(vid: &Video) -> String {
+    format!(
+        "Video {} (@{}): Post unavailable — this post is age-restricted. TikTok blocks it on web without a logged-in account that can view mature content. URL: {}. Log in on tiktok.com on this PC (same account as your phone), confirm the video plays in the browser, then run `cargo run login` to refresh archiver cookies.",
+        vid.video_id, vid.username, vid.url
+    )
+}
+
+fn classify_download_failure(raw: &str, vid: &Video) -> (String, bool) {
+    if is_age_restricted_error(raw) {
+        return (age_restricted_user_message(vid), true);
+    }
+    let mark_unavailable = is_fatal_source_error(raw);
+    let user_msg = if mark_unavailable {
+        format!("Video {} (@{}): source unavailable — {}", vid.video_id, vid.username, raw)
+    } else {
+        format!("Error downloading {:?}: {}", vid, raw)
+    };
+    (user_msg, mark_unavailable)
+}
+
 fn is_fatal_source_error(error: &str) -> bool {
+    if is_age_restricted_error(error) {
+        return true;
+    }
     let msg = error.to_ascii_lowercase();
     msg.contains("your ip address is blocked from accessing this post")
         || msg.contains("video is unavailable")
@@ -63,27 +100,24 @@ fn is_fatal_source_error(error: &str) -> bool {
 }
 
 pub fn download_pending()->Result<()>{
-    let vids:Vec<Video> = load_all()?.into_values().flatten().filter(|vid| vid.download_status == DownloadStatus::NotDownloaded || vid.download_status== DownloadStatus::DownloadFailed).collect();
+    let vids: Vec<Video> = load_all()?
+        .into_iter()
+        .flat_map(|(bucket, videos)| {
+            videos.into_iter().filter_map(move |mut vid| {
+                if vid.download_status == DownloadStatus::NotDownloaded
+                    || vid.download_status == DownloadStatus::DownloadFailed
+                {
+                    if bucket == "favorite" {
+                        vid.is_fav = true;
+                    }
+                    Some(vid)
+                } else {
+                    None
+                }
+            })
+        })
+        .collect();
     download_videos(&vids)?;
-    for vid in vids{
-
-    if vid.is_fav{
-        let original = PathBuf::from(format!(
-            "{}/{}/{}.{}",
-            load_config()?.download_dir,
-            vid.username,
-            vid.video_id,
-            VIDEO_EXT
-        ));
-        let link = PathBuf::from(format!(
-            "{}/favs/{}.{}",
-            load_config()?.download_dir,
-            vid.video_id,
-            VIDEO_EXT
-        ));
-        fs::hard_link(original, link)?;
-    }
-    }
     Ok(())
 }
 
@@ -113,7 +147,8 @@ fn resolve_executable_path(default_name: &str) -> PathBuf {
 }
 
 pub fn download_video(vid: &Video) -> Result<()> {
-    let path = video_file_path(&vid.username, vid.video_id)?;
+    let path_user = if vid.is_fav { "favorite" } else { &vid.username };
+    let path = video_file_path(path_user, vid.video_id)?;
     let cookie_params = load_cookie_params()?;
     let ytdlp_path = resolve_executable_path("yt-dlp.exe");
     let mut cmd = Command::new(&ytdlp_path);
@@ -137,7 +172,12 @@ pub fn download_video(vid: &Video) -> Result<()> {
     if output.status.success() {
         Ok(())
     } else {
-        let err = String::from_utf8_lossy(&output.stderr);
-        Err(anyhow!(format!("yt-dlp: {}", err)))
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let combined = format!("{}\n{}", stderr, stdout);
+        if is_age_restricted_error(&combined) {
+            return Err(anyhow!(age_restricted_user_message(vid)));
+        }
+        Err(anyhow!(format!("yt-dlp: {}", stderr.trim())))
     }
 }

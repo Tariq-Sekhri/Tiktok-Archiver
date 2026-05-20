@@ -8,16 +8,17 @@ use crate::db::account::{load_tracked_accounts, update_account_state, Account, C
 use crate::db::browser::{launch_browser, scroll_x_times, BrowserSession};
 use crate::db::check_state;
 use crate::db::config::load_config;
-use crate::db::logger::{log, Event, LogLevel};
 use crate::db::video::{append_videos, load_all, save_all, total_videos, Video};
 use crate::discover::{fetch_newest_videos, login};
 use crate::download::{download_pending, VIDEO_EXT};
 use anyhow::Context;
 use api::get_new_count;
+use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::path::{PathBuf};
 use std::{env, fs, io, io::Write, process};
 use tokio::time::{sleep, Duration};
+use crate::db::logger::Log;
 
 #[derive(Debug)]
 pub enum RunMode {
@@ -27,8 +28,7 @@ pub enum RunMode {
 }
 
 fn print_usage_and_exit() -> ! {
-    eprintln!("Usage: cargo run [run mode]");
-    eprintln!("  no args = default mode (auto login on first run if needed)");
+    eprintln!("  no args = default mode");
     eprintln!(
         "  login   = explicitly run login flow (for switching accounts or refreshing cookies)"
     );
@@ -50,7 +50,7 @@ fn parse_args() -> RunMode {
 }
 
 fn print_how_to_use_and_exit(reason: &str) -> ! {
-    log(Event::new(reason.to_string(), LogLevel::CriticalFail));
+    Log::critical_fail(reason.to_string()); 
     eprintln!("\n[State Check] {}\n", reason);
     eprintln!("How to use, in order:");
     eprintln!("  1) cargo run");
@@ -81,22 +81,23 @@ async fn timeout(wait_secs: u8) {
     }
     print!("\rdone.        \n");
 }
-fn hard_link(fav:Video,vid:Video){
+fn hard_link(fav:&Video)->anyhow::Result<()>{
     let original = PathBuf::from(format!(
         "{}/{}/{}.{}",
-        load_config().unwrap().download_dir,
+        load_config()?.download_dir,
         fav.username,
         fav.video_id,
         VIDEO_EXT
     ));
     let link = PathBuf::from(format!("{}/favs/{}.{}",
-                                     load_config().unwrap().download_dir,
+                                     load_config()?.download_dir,
                                      fav.video_id,
                                      VIDEO_EXT
     ));
-    println!("og:{:?}", original);
-    println!("link:{:?}", link);
-    fs::hard_link(original, link).unwrap();
+    // println!("og:{:?}", original);
+    // println!("link:{:?}", link);
+    fs::hard_link(original, link)?;
+    Ok(())
 }
 async fn default_loop() {
     loop {
@@ -104,10 +105,7 @@ async fn default_loop() {
             Ok(accounts) => accounts,
 
             Err(e) => {
-                log(Event::new(
-                    format!("Failed to load accounts: {}", e),
-                    LogLevel::Error,
-                ));
+                Log::error(format!("Failed to load accounts: {}", e));
                 timeout(5u8).await;
                 continue;
             }
@@ -117,7 +115,7 @@ async fn default_loop() {
             let new_count = match get_new_count(&account.name).await {
                 Ok(n) => n,
                 Err(e) => {
-                    eprintln!("error getting count{e}");
+                    Log::error(format!("error getting count{e}"));
                     continue;
                 }
             };
@@ -125,7 +123,7 @@ async fn default_loop() {
                 Ok(m) => m,
                 Err(e) => {
                     let msg = format!("{}: load_all_seen_videos failed: {}", account.name, e);
-                    log(Event::new(msg, LogLevel::CriticalFail));
+                    Log::critical_fail(msg);
                     unreachable!()
                 }
             };
@@ -133,12 +131,9 @@ async fn default_loop() {
             let existing_videos: Vec<Video> = match seen_map.get(&account.name) {
                 Some(v) => v.clone(),
                 None => {
-                    log(Event::new(
-                        format!(
-                            "{}: no entry in seen_videos, using empty list",
-                            account.name
-                        ),
-                        LogLevel::Error,
+                    Log::error(format!(
+                        "{}: no entry in seen_videos, using empty list",
+                        account.name
                     ));
                     Vec::new()
                 }
@@ -157,10 +152,7 @@ async fn default_loop() {
                         let fetched_videos = match fetch_newest_videos(&account).await {
                             Ok(v) => v,
                             Err(e) => {
-                                log(Event::new(
-                                    format!("{}: fetch_newest_videos failed: {}", account.name, e),
-                                    LogLevel::Error,
-                                ));
+                                Log::error(format!("{}: fetch_newest_videos failed: {}", account.name, e));
                                 continue;
                             }
                         };
@@ -185,7 +177,7 @@ async fn default_loop() {
             if !new_videos.is_empty() {
                 if let Err(e) = append_videos(&account.name, &new_videos) {
                     let msg = format!("{}: append_seen_videos failed: {}", account.name, e);
-                    log(Event::new(msg, LogLevel::CriticalFail));
+                    Log::critical_fail(msg);
                     continue;
                 }
             }
@@ -194,22 +186,21 @@ async fn default_loop() {
 
             if let Err(e) = download_pending() {
                 let msg = format!("Error downloading for {}: {}", account.name, e);
-                log(Event::new(msg, LogLevel::Error));
+                Log::error(msg);
             }
             sleep(Duration::from_secs(1)).await;
         }
         if let Ok(config) = load_config() {
+            println!("fav: {}", config.download_fav );
             if config.download_fav {
 
-                fav().await.unwrap();
+                if let Err(e) = fav().await{
+                    Log::error(format!("Fav Error:{}", e));
+                };
 
-                    // update hardlinks
             }
         } else {
-            log(Event::new(
-                "Config Failed to load".to_string(),
-                LogLevel::Error,
-            ));
+            Log::error("Config Failed to load".to_string());
         }
         timeout(60u8).await;
     }
@@ -220,7 +211,7 @@ fn reconcile_account_state(account: &Account, new_count: i64, unavailable: i64) 
         Ok(t) => t,
         Err(e) => {
             let msg = format!("{}: total_seen_videos failed: {}", account.name, e);
-            log(Event::new(msg, LogLevel::CriticalFail));
+            Log::critical_fail(msg);
             unreachable!()
         }
     };
@@ -234,7 +225,7 @@ fn reconcile_account_state(account: &Account, new_count: i64, unavailable: i64) 
             "{}: diff became negative (count_now={}, unavailable={}, total_seen={})",
             account.name, new_count, unavailable, total_seen_videos_count
         );
-        log(Event::new(msg, LogLevel::CriticalFail));
+        Log::critical_fail(msg);
     }
 
     let invariant_lhs = new_count + unavailable - diff;
@@ -244,17 +235,19 @@ fn reconcile_account_state(account: &Account, new_count: i64, unavailable: i64) 
             "{}: invariant violated (lhs={}, rhs={})",
             account.name, invariant_lhs, total_seen_videos_count
         );
-        log(Event::new(msg, LogLevel::Error));
+        Log::error(msg);
     }
 
     if let Err(e) = update_account_state(account, new_count, diff, unavailable) {
         let msg = format!("Error updating state for @{}: {}", account.name, e);
-        log(Event::new(msg, LogLevel::CriticalFail));
+        Log::critical_fail(msg);
     }
 }
 async fn open_profile() -> BrowserSession {
+    println!("[fav] launching browser...");
     let session = launch_browser("https://www.tiktok.com", false).unwrap();
 
+    println!("[fav] opening profile...");
     timeout(3).await;
     session
         .tab
@@ -263,6 +256,7 @@ async fn open_profile() -> BrowserSession {
         .click()
         .expect("counlt click");
     timeout(3).await;
+    println!("[fav] opening favorites tab...");
     session
         .tab
         .wait_for_xpath(r#"//span[text()="Favorites"]/ancestor::p[@role="tab"]"#)
@@ -270,52 +264,67 @@ async fn open_profile() -> BrowserSession {
         .click()
         .unwrap();
     timeout(5).await;
+    println!("[fav] favorites page ready");
     session
 }
 
 async fn fav()->anyhow::Result<()>{
     let session = open_profile().await;
+    let mut pass = 0u32;
+    let mut done_ids: HashSet<i64> = HashSet::new();
+    let download_dir = load_config()?.download_dir;
     loop {
+        pass += 1;
+        println!("[fav] pass {}: reading page...", pass);
         let html = session.tab.get_content().context("get_content")?;
-        let junk_ids = [
-            7511413375285447958,
-            7074556216227155202,
-            7035790010829769990,
-            7008644040782613765,
-        ];
-        let fav_vids: Vec<Video> = videos_from_anchor_links(&html, true)?
+        let fav_vids: Vec<Video> = videos_from_anchor_links(&html)?
             .into_iter()
-            .filter(|vid| !junk_ids.contains(&vid.video_id))
+            .filter(|vid| !done_ids.contains(&vid.video_id))
             .collect();
+        println!("[fav] pass {}: found {} videos on page", pass, fav_vids.len());
         let mut seen_vids = load_all()?;
+        let favorite_videos = seen_vids.entry("favorite".to_string()).or_default();
+        let existing_fav_ids: HashSet<i64> = favorite_videos.iter().map(|v| v.video_id).collect();
         let mut new_count = 0;
         for fav in &fav_vids {
-            if let Some(user) = seen_vids.get_mut(&fav.username) {
-                if let Some(vid) = user.iter_mut().find(|vid| vid.video_id == fav.video_id) {
-                    if !vid.is_fav {
-                        new_count += 1;
-                    }
-                    vid.is_fav = true;
-                } else {
-                    user.push(fav.clone());
+            done_ids.insert(fav.video_id);
+            if existing_fav_ids.contains(&fav.video_id) {
+                let fav_path = format!("{}/favs/{}.{}", download_dir, fav.video_id, VIDEO_EXT);
+                if !fs::exists(fav_path)? {
+                    println!(
+                        "[fav] hard_link @{} id={}",
+                        fav.username, fav.video_id
+                    );
                     new_count += 1;
+                    hard_link(fav)?;
                 }
             } else {
-                seen_vids.insert(fav.username.clone(), vec![fav.clone()]);
+                println!(
+                    "[fav] new favorite @{} id={}",
+                    fav.username, fav.video_id
+                );
+                let mut fav_video = fav.clone();
+                fav_video.is_fav = true;
+                favorite_videos.push(fav_video);
                 new_count += 1;
             }
         }
         save_all(&seen_vids)?;
+        println!(
+            "[fav] pass {}: saved seen db, new_or_updated={}",
+            pass, new_count
+        );
         if new_count >= 1 {
-            scroll_x_times(2, &session)?;
+            println!("[fav] pass {}: scrolling for more...", pass);
+            scroll_x_times(1+pass*pass*pass, &session)?;
         } else {
+            println!("[fav] pass {}: no new items, done", pass);
+            println!("[fav] finished after {} passes", pass);
             return Ok(());
         }
     }
 }
-// println!("Press Enter To Exit:");
-// let mut asd = String::new();
-// io::stdin().read_line(&mut asd).unwrap();
+
 #[tokio::main]
 async fn main() {
 
@@ -330,7 +339,7 @@ async fn main() {
     match mode {
         RunMode::Login => login().await.unwrap_or_else(|e| {
             let msg = format!("Error logging in: {}", e);
-            log(Event::new(msg.clone(), LogLevel::CriticalFail));
+            Log::critical_fail(msg.clone());
         }),
         RunMode::Default | RunMode::Dev => default_loop().await,
     }

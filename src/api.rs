@@ -3,8 +3,6 @@ use anyhow::{anyhow, Context, Result};
 use regex::Regex;
 use serde_json::Value;
 use std::time::{Duration, Instant};
-use headless_chrome::protocol::cdp::Network::InitiatorType::Parser;
-use crate::db::video;
 use crate::db::video::Video;
 
 fn parse_rehydration(html: &str) -> Option<Value> {
@@ -55,18 +53,24 @@ pub async fn get_new_count(username: &str) -> Result<i64> {
     video_count_from_html(&html)
 }
 
-pub fn videos_from_anchor_links(html: &str, is_fav:bool) -> Result<Vec<Video>> {
+pub fn videos_from_anchor_links(html: &str) -> Result<Vec<Video>> {
     let re = Regex::new(r#"/@([\w.]+)/video/(\d+)"#)?;
     let mut for_ret:Vec<Video>= Vec::new();
+    let junk_ids:[i64;4] = [
+        7511413375285447958,
+        7074556216227155202,
+        7035790010829769990,
+        7008644040782613765,
+    ];
     for cap in re.captures_iter(html) {
         let username = cap.get(1).map(|m| m.as_str()).unwrap_or("");
-        let id = cap.get(2).map(|m| m.as_str()).unwrap_or("");
-        if id.is_empty() {
+        let id: i64 = cap.get(2).ok_or_else(|| anyhow!("missing video id"))?.as_str().parse().context("parse video id")?;
+        if junk_ids.contains(&id){
             continue;
         }
-
-        for_ret.push(Video::new(format!("https://www.tiktok.com/@{}/video/{}", username, id), id.parse()?, username.to_string(), is_fav));
+        for_ret.push(Video::new(format!("https://www.tiktok.com/@{}/video/{}", username, id), id, username.to_string()));
     }
+
         Ok(for_ret)
 }
 

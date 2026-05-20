@@ -15,7 +15,7 @@ use crate::{print_how_to_use_and_exit, RunMode};
 use crate::db::browser::{cookies_have_any, log_auth_storage_status};
 use crate::db::config::{load_config, save_config, account_name, is_tracked, Config};
 use crate::db::account::{account_file, add_account, load_accounts, update_account_state};
-use crate::db::logger::{log, Event, LogLevel};
+use crate::db::logger::Log;
 use anyhow::Result;
 use anyhow::anyhow;
 use crate::discover::{first_discovery, login};
@@ -171,26 +171,20 @@ async fn config_and_accounts_sync(config: &mut Config) {
             "Pre-Reconciling accounts: config_all_names={:?}, state_names={:?}, config_only_tracked={:?}, state_only={:?}",
             config_all_names, state_names, config_only_tracked, state_only
         );
-        log(Event::new(msg, LogLevel::Info));
+        Log::info(msg);
 
         for name in config_only_tracked {
             println!("[sync] first_discovery start for @{}", name);
-            log(Event::new(
-                format!("[sync] first_discovery start for @{}", name),
-                LogLevel::Info,
-            ));
+            Log::info(format!("[sync] first_discovery start for @{}", name));
             match first_discovery(name.clone()).await {
                 Ok((acc,vids))=>{
-                    log(Event::new(
-                        format!(
-                            "[sync] first_discovery success for @{}: count={}, diff={}, unavailable={}, vids={}",
-                            acc.name,
-                            acc.count,
-                            acc.diff,
-                            acc.unavailable,
-                            vids.len()
-                        ),
-                        LogLevel::Info,
+                    Log::info(format!(
+                        "[sync] first_discovery success for @{}: count={}, diff={}, unavailable={}, vids={}",
+                        acc.name,
+                        acc.count,
+                        acc.diff,
+                        acc.unavailable,
+                        vids.len()
                     ));
                     if append_videos(&acc.name.to_string(), &vids).is_err() {
                         println!("Error Appending");
@@ -200,12 +194,9 @@ async fn config_and_accounts_sync(config: &mut Config) {
                     };
                     if let Err(e) = add_account(&acc) {
                         if e.to_string().contains("account already exists") {
-                            log(Event::new(
-                                format!(
-                                    "[sync] account @{} already exists, applying first_discovery state",
-                                    acc.name
-                                ),
-                                LogLevel::Info,
+                            Log::info(format!(
+                                "[sync] account @{} already exists, applying first_discovery state",
+                                acc.name
                             ));
                             if let Err(update_err) =
                                 update_account_state(&acc, acc.count, acc.diff, acc.unavailable)
@@ -219,20 +210,14 @@ async fn config_and_accounts_sync(config: &mut Config) {
                             print_how_to_use_and_exit(&format!("Failed to add account: {}", e));
                         }
                     } else {
-                        log(Event::new(
-                            format!("[sync] added new account @{}", acc.name),
-                            LogLevel::Info,
-                        ));
+                        Log::info(format!("[sync] added new account @{}", acc.name));
                     }
                     println!("Added Account: {:?}", acc);
                 }
                 Err(e)=>{print_how_to_use_and_exit(&format!("First discovery failed for @{}: {}", name, e)); }
             }
             println!("[sync] first_discovery done for @{}", name);
-            log(Event::new(
-                format!("[sync] first_discovery done for @{}", name),
-                LogLevel::Info,
-            ));
+            Log::info(format!("[sync] first_discovery done for @{}", name));
         }
 
 

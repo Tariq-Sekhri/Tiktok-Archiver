@@ -64,6 +64,7 @@ pub struct Video {
     pub url: String,
     pub video_id: i64,
     pub username: String,
+    pub is_fav:bool,
     pub download_status: DownloadStatus,
     pub source_available: bool,
     #[serde(
@@ -71,13 +72,15 @@ pub struct Video {
         deserialize_with = "deserialize_download_date"
     )]
     pub download_date: Option<NaiveDateTime>,
+
 }
 
 impl Video{
-    pub fn new(url:String, video_id:i64, username:String)->Self{
+    pub fn new(url:String, video_id:i64, username:String, is_fav:bool)->Self{
         Self{
             url,
             video_id,
+            is_fav,
             username,
             download_status: DownloadStatus::NotDownloaded,
             source_available: true,
@@ -86,42 +89,27 @@ impl Video{
     }
 }
 
-pub trait VideoStore {
-    const FILE_NAME: &'static str;
-}
-
-pub struct SeenVideos;
-pub struct FavVideos;
-
-impl VideoStore for SeenVideos {
-    const FILE_NAME: &'static str = "seen_videos.json";
-}
-
-impl VideoStore for FavVideos {
-    const FILE_NAME: &'static str = "fav_videos.json";
-}
-
-pub fn videos_file<S: VideoStore>() -> Result<PathBuf> {
-    let path = state_dir().join(S::FILE_NAME);
+pub fn videos_file()-> Result<PathBuf> {
+    let path = state_dir().join("seen_videos.json");
     ensure_file(&path, "{}\n")?;
     Ok(path)
 }
 
-pub fn load_all<S: VideoStore>() -> Result<HashMap<String, Vec<Video>>> {
-    let path = videos_file::<S>()?;
+pub fn load_all() -> Result<HashMap<String, Vec<Video>>> {
+    let path = videos_file()?;
     let file = fs::File::open(path)?;
     serde_json::from_reader(file).context("Error loading videos")
 }
 
-pub fn save_all<S: VideoStore>(map: &HashMap<String, Vec<Video>>) -> Result<()> {
-    let path = videos_file::<S>()?;
+pub fn save_all(map: &HashMap<String, Vec<Video>>) -> Result<()> {
+    let path = videos_file()?;
     let json = serde_json::to_string_pretty(map)?;
     atomic_write_text(&path, &json)?;
     Ok(())
 }
 
-pub fn append_videos<S: VideoStore>(username: &str, vids: &[Video]) -> Result<()> {
-    let mut map = load_all::<S>()?;
+pub fn append_videos(username: &str, vids: &[Video]) -> Result<()> {
+    let mut map = load_all()?;
     let user_vids = map.entry(username.to_string()).or_default();
 
     let mut existing_ids: HashSet<i64> =
@@ -133,15 +121,15 @@ pub fn append_videos<S: VideoStore>(username: &str, vids: &[Video]) -> Result<()
         }
     }
 
-    save_all::<S>(&map)
+    save_all(&map)
 }
 
-pub fn update_download_status<S: VideoStore>(
+pub fn update_download_status(
     username: &str,
     video_id: i64,
     status: DownloadStatus,
 ) -> Result<()> {
-    let mut map = load_all::<S>()?;
+    let mut map = load_all()?;
 
     if let Some(vids) = map.get_mut(username) {
         if let Some(v) = vids.iter_mut().find(|v| v.video_id == video_id) {
@@ -159,15 +147,15 @@ pub fn update_download_status<S: VideoStore>(
         }
     }
 
-    save_all::<S>(&map)
+    save_all(&map)
 }
 
-pub fn update_source_available<S: VideoStore>(
+pub fn update_source_available(
     username: &str,
     video_id: i64,
     source_available: bool,
 ) -> Result<()> {
-    let mut map = load_all::<S>()?;
+    let mut map = load_all()?;
 
     if let Some(vids) = map.get_mut(username) {
         if let Some(v) = vids.iter_mut().find(|v| v.video_id == video_id) {
@@ -175,11 +163,11 @@ pub fn update_source_available<S: VideoStore>(
         }
     }
 
-    save_all::<S>(&map)
+    save_all(&map)
 }
 
-pub fn total_videos<S: VideoStore>() -> Result<HashMap<String, usize>> {
-    let vids = load_all::<S>()?;
+pub fn total_videos() -> Result<HashMap<String, usize>> {
+    let vids = load_all()?;
 
     Ok(vids
         .into_iter()

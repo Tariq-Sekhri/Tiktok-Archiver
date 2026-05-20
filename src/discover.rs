@@ -16,7 +16,7 @@ pub async fn first_discovery(username:String) -> Result<(Account, Vec<Video>)> {
     let session = launch_browser(&format!("https://www.tiktok.com/@{}", &username), discovery_headless())?;
     scroll_to_bottom(&session)?;
     let html = session.tab.get_content().context("get_content")?;
-    let new_vids = videos_from_anchor_links(&html, &username)?;
+    let new_vids = videos_from_anchor_links(&html, false)?;
 
     if new_vids.is_empty() {
         return Err(anyhow::anyhow!("No new video"));
@@ -87,7 +87,7 @@ pub async fn fetch_newest_videos(account: &Account) -> Result<Vec<Video>> {
     let url = format!("https://www.tiktok.com/@{}", account.name);
     let session = launch_browser(&url,  discovery_headless())?;
     sleep(Duration::from_secs(WAIT_AFTER_LOAD_S)).await;
-    videos_from_anchor_links(&session.tab.get_content()?, &account.name)
+    videos_from_anchor_links(&session.tab.get_content()?, false)
 }
 
 

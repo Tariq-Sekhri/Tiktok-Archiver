@@ -3,6 +3,8 @@ use anyhow::{anyhow, Context, Result};
 use regex::Regex;
 use serde_json::Value;
 use std::time::{Duration, Instant};
+use headless_chrome::protocol::cdp::Network::InitiatorType::Parser;
+use crate::db::video;
 use crate::db::video::Video;
 
 fn parse_rehydration(html: &str) -> Option<Value> {
@@ -53,30 +55,18 @@ pub async fn get_new_count(username: &str) -> Result<i64> {
     video_count_from_html(&html)
 }
 
-pub fn videos_from_anchor_links(html: &str, username: &str) -> Result<Vec<Video>> {
+pub fn videos_from_anchor_links(html: &str, is_fav:bool) -> Result<Vec<Video>> {
     let re = Regex::new(r#"/@([\w.]+)/video/(\d+)"#)?;
-    let mut seen = std::collections::HashSet::new();
-    let mut ids = Vec::new();
+    let mut for_ret:Vec<Video>= Vec::new();
     for cap in re.captures_iter(html) {
-        let u = cap.get(1).map(|m| m.as_str()).unwrap_or("");
-        let vid = cap.get(2).map(|m| m.as_str()).unwrap_or("");
-        if vid.is_empty() {
+        let username = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+        let id = cap.get(2).map(|m| m.as_str()).unwrap_or("");
+        if id.is_empty() {
             continue;
         }
-        if u.eq_ignore_ascii_case(username) && seen.insert(vid.to_string()) {
-            ids.push(vid.to_string());
-        }
+
+        for_ret.push(Video::new(format!("https/tiktok.com/@{}/{}", username, id), id.parse()?, username.to_string(), is_fav));
     }
-    ids.into_iter()
-        .map(|id| {
-            let parsed_id = id.parse::<i64>()?;
-            Ok(Video::new(
-                format!("https://www.tiktok.com/@{}/video/{}", username, parsed_id),
-                parsed_id,
-                username.to_string(),
-            ))
-        })
-        .collect::<Result<Vec<_>>>()
+        Ok(for_ret)
 }
 
-pub fn get_fav_count() {}

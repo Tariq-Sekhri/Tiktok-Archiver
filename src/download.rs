@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 #[cfg(windows)]
@@ -7,7 +8,7 @@ use crate::db::browser::{load_cookie_params, write_ytdlp_cookie_jar};
 use anyhow::Result;
 use crate::db::config::load_config;
 use crate::db::logger::{log, Event, LogLevel};
-use crate::db::video::{load_all, update_download_status, update_source_available, DownloadStatus, SeenVideos, Video};
+use crate::db::video::{load_all, update_download_status, update_source_available, DownloadStatus, Video};
 
 pub const VIDEO_EXT: &str = "mp4";
 
@@ -22,11 +23,12 @@ fn have_video_on_disk(vid: &Video) -> Result<bool> {
 }
 
 
-fn download_videos(vids:Vec<Video>)->Result<()>{
+fn download_videos(vids:&Vec<Video>)->Result<()>{
     for vid in vids {
+
         if have_video_on_disk(&vid).unwrap_or(false) {
             log(Event::new(format!("had {} on disk", vid.video_id), LogLevel::Info));
-            update_download_status::<SeenVideos>(&vid.username, vid.video_id, DownloadStatus::Downloaded)?;
+            update_download_status(&vid.username, vid.video_id, DownloadStatus::Downloaded)?;
             continue;
         }
         if !vid.source_available || vid.download_status == DownloadStatus::Downloaded {
@@ -36,15 +38,15 @@ fn download_videos(vids:Vec<Video>)->Result<()>{
 
         println!("Downloading:{}", vid.video_id);
         if let Err(e) = download_video(&vid) {
-            update_download_status::<SeenVideos>(&vid.username, vid.video_id, DownloadStatus::DownloadFailed)?;
+            update_download_status(&vid.username, vid.video_id, DownloadStatus::DownloadFailed)?;
             if is_fatal_source_error(&e.to_string()) {
-                update_source_available::<SeenVideos>(&vid.username, vid.video_id, false)?;
+                update_source_available(&vid.username, vid.video_id, false)?;
             }
             log(Event::new(format!("Error Downloading vid:{:?}:({})", vid, e), LogLevel::Error));
             continue;
         };
         log(Event::new(format!("Downloaded vid:{:?}:", vid), LogLevel::Info));
-        update_download_status::<SeenVideos>(&vid.username, vid.video_id, DownloadStatus::Downloaded)?;
+        update_download_status(&vid.username, vid.video_id, DownloadStatus::Downloaded)?;
     }
     Ok(())
 }
@@ -61,8 +63,27 @@ fn is_fatal_source_error(error: &str) -> bool {
 }
 
 pub fn download_pending()->Result<()>{
-    let vids:Vec<Video> = load_all::<SeenVideos>()?.into_values().flatten().filter(|vid| vid.download_status == DownloadStatus::NotDownloaded || vid.download_status== DownloadStatus::DownloadFailed).collect();
-    download_videos(vids)?;
+    let vids:Vec<Video> = load_all()?.into_values().flatten().filter(|vid| vid.download_status == DownloadStatus::NotDownloaded || vid.download_status== DownloadStatus::DownloadFailed).collect();
+    download_videos(&vids)?;
+    for vid in vids{
+
+    if vid.is_fav{
+        let original = PathBuf::from(format!(
+            "{}/{}/{}.{}",
+            load_config()?.download_dir,
+            vid.username,
+            vid.video_id,
+            VIDEO_EXT
+        ));
+        let link = PathBuf::from(format!(
+            "{}/favs/{}.{}",
+            load_config()?.download_dir,
+            vid.video_id,
+            VIDEO_EXT
+        ));
+        fs::hard_link(original, link)?;
+    }
+    }
     Ok(())
 }
 
@@ -91,7 +112,7 @@ fn resolve_executable_path(default_name: &str) -> PathBuf {
     PathBuf::from(default_name)
 }
 
-fn download_video(vid: &Video) -> Result<()> {
+pub fn download_video(vid: &Video) -> Result<()> {
     let path = video_file_path(&vid.username, vid.video_id)?;
     let cookie_params = load_cookie_params()?;
     let ytdlp_path = resolve_executable_path("yt-dlp.exe");

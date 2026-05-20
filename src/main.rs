@@ -5,7 +5,7 @@ mod download;
 
 use crate::api::videos_from_anchor_links;
 use crate::db::account::{load_tracked_accounts, update_account_state, Account, CountEvent};
-use crate::db::browser::{launch_browser, scroll_x_times, BrowserSession};
+use crate::db::browser::{discovery_headless, launch_browser, scroll_x_times, BrowserSession};
 use crate::db::check_state;
 use crate::db::config::load_config;
 use crate::db::video::{append_videos, load_all, save_all, total_videos, DownloadStatus, Video};
@@ -227,7 +227,7 @@ fn reconcile_account_state(account: &Account, new_count: i64, unavailable: i64) 
 }
 async fn open_profile() -> BrowserSession {
     println!("[fav] launching browser...");
-    let session = launch_browser("https://www.tiktok.com", false).unwrap();
+    let session = launch_browser("https://www.tiktok.com", discovery_headless()).unwrap();
 
     println!("[fav] opening profile...");
     timeout(3).await;
@@ -323,10 +323,8 @@ async fn main() {
 
     let mode = parse_args();
     println!("Run Mode:{:?}", mode);
-    match mode {
-        RunMode::Default | RunMode::Dev | RunMode::Login => {
-            env::set_var("TTA_SHOW_BROWSER", "1");
-        }
+    if matches!(mode, RunMode::Dev) {
+        env::set_var("TTA_SHOW_BROWSER", "1");
     }
     check_state(&mode).await;
     match mode {

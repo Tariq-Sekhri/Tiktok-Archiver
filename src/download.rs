@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 #[cfg(windows)]
@@ -13,17 +14,41 @@ pub const VIDEO_EXT: &str = "mp4";
 
 fn video_file_path(username: &str, video_id: i64) -> Result<PathBuf> {
     let mut p = PathBuf::from(load_config()?.download_dir);
-    if username == "favorite" {
-        p.push("favs");
-    } else {
-        p.push(username);
-    }
+    p.push(username);
     p.push(format!("{}.{}", video_id, VIDEO_EXT));
     Ok(p)
 }
+
+fn fav_file_path(video_id: i64) -> Result<PathBuf> {
+    let mut p = PathBuf::from(load_config()?.download_dir);
+    p.push("favs");
+    p.push(format!("{}.{}", video_id, VIDEO_EXT));
+    Ok(p)
+}
+
+pub fn link_fav_video(vid: &Video) -> Result<()> {
+    let original = video_file_path(&vid.username, vid.video_id)?;
+    let link = fav_file_path(vid.video_id)?;
+    if let Some(parent) = link.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::hard_link(&original, &link)?;
+    Log::info(format!("hard link created for {}", vid.video_id));
+    Ok(())
+}
+
+pub fn video_on_disk(username: &str, video_id: i64) -> Result<bool> {
+    Ok(video_file_path(username, video_id)?.exists())
+}
+
 fn have_video_on_disk(vid: &Video) -> Result<bool> {
-    let path_user = if vid.is_fav { "favorite" } else { &vid.username };
-    Ok(video_file_path(path_user, vid.video_id)?.exists())
+    if video_file_path(&vid.username, vid.video_id)?.exists() {
+        return Ok(true);
+    }
+    if vid.is_fav {
+        return Ok(fav_file_path(vid.video_id)?.exists());
+    }
+    Ok(false)
 }
 
 
@@ -147,8 +172,10 @@ fn resolve_executable_path(default_name: &str) -> PathBuf {
 }
 
 pub fn download_video(vid: &Video) -> Result<()> {
-    let path_user = if vid.is_fav { "favorite" } else { &vid.username };
-    let path = video_file_path(path_user, vid.video_id)?;
+    let path = video_file_path(&vid.username, vid.video_id)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
     let cookie_params = load_cookie_params()?;
     let ytdlp_path = resolve_executable_path("yt-dlp.exe");
     let mut cmd = Command::new(&ytdlp_path);
@@ -170,6 +197,9 @@ pub fn download_video(vid: &Video) -> Result<()> {
         .map_err(|e| anyhow!(format!("Failed to execute yt-dlp: {}", e)))?;
 
     if output.status.success() {
+        if vid.is_fav {
+            link_fav_video(vid)?;
+        }
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);

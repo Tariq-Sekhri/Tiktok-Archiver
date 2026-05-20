@@ -8,14 +8,14 @@ use crate::db::account::{load_tracked_accounts, update_account_state, Account, C
 use crate::db::browser::{launch_browser, scroll_x_times, BrowserSession};
 use crate::db::check_state;
 use crate::db::config::load_config;
-use crate::db::video::{append_videos, load_all, save_all, total_videos, Video};
+use crate::db::video::{append_videos, load_all, save_all, total_videos, DownloadStatus, Video};
 use crate::discover::{fetch_newest_videos, login};
-use crate::download::{download_pending, VIDEO_EXT};
+use crate::db::video::update_download_status;
+use crate::download::{download_pending, link_fav_video, video_on_disk, VIDEO_EXT};
 use anyhow::Context;
 use api::get_new_count;
 use std::collections::HashSet;
 use std::io::IsTerminal;
-use std::path::{PathBuf};
 use std::{env, fs, io, io::Write, process};
 use tokio::time::{sleep, Duration};
 use crate::db::logger::Log;
@@ -53,11 +53,11 @@ fn print_how_to_use_and_exit(reason: &str) -> ! {
     Log::critical_fail(reason.to_string()); 
     eprintln!("\n[State Check] {}\n", reason);
     eprintln!("How to use, in order:");
-    eprintln!("  1) cargo run");
-    eprintln!("     - On first run, this will prompt you to log in and save cookies into `state/saved_cookies.json` if none are present.");
+    eprintln!("  1) run");
+    eprintln!("     - On first run, this will prompt you to log in and save cookies into `state/saved_cookies.json`");
     eprintln!("  2) update config.yaml");
     eprintln!("     - Choose which accounts you want to track and optionally change download_dir.");
-    eprintln!("  3) cargo run");
+    eprintln!("  3) run");
     eprintln!(
         "     - Default mode: poll for new videos + download pending using your saved login."
     );
@@ -80,24 +80,6 @@ async fn timeout(wait_secs: u8) {
         sleep(Duration::from_secs(1)).await;
     }
     print!("\rdone.        \n");
-}
-fn hard_link(fav:&Video)->anyhow::Result<()>{
-    let original = PathBuf::from(format!(
-        "{}/{}/{}.{}",
-        load_config()?.download_dir,
-        fav.username,
-        fav.video_id,
-        VIDEO_EXT
-    ));
-    let link = PathBuf::from(format!("{}/favs/{}.{}",
-                                     load_config()?.download_dir,
-                                     fav.video_id,
-                                     VIDEO_EXT
-    ));
-    // println!("og:{:?}", original);
-    // println!("link:{:?}", link);
-    fs::hard_link(original, link)?;
-    Ok(())
 }
 async fn default_loop() {
     loop {
@@ -202,7 +184,7 @@ async fn default_loop() {
         } else {
             Log::error("Config Failed to load".to_string());
         }
-        timeout(60u8).await;
+        timeout(60).await;
     }
 }
 
@@ -286,30 +268,41 @@ async fn fav()->anyhow::Result<()>{
         let favorite_videos = seen_vids.entry("favorite".to_string()).or_default();
         let existing_fav_ids: HashSet<i64> = favorite_videos.iter().map(|v| v.video_id).collect();
         let mut new_count = 0;
+        let mut mark_downloaded: Vec<i64> = Vec::new();
         for fav in &fav_vids {
             done_ids.insert(fav.video_id);
+
             if existing_fav_ids.contains(&fav.video_id) {
+                continue;
+            }
+
+            new_count += 1;
+            let mut fav_video = fav.clone();
+            fav_video.is_fav = true;
+
+            if video_on_disk(&fav.username, fav.video_id)? {
                 let fav_path = format!("{}/favs/{}.{}", download_dir, fav.video_id, VIDEO_EXT);
-                if !fs::exists(fav_path)? {
+                if !fs::exists(&fav_path)? {
                     println!(
                         "[fav] hard_link @{} id={}",
                         fav.username, fav.video_id
                     );
-                    new_count += 1;
-                    hard_link(fav)?;
+                    link_fav_video(fav)?;
                 }
+                mark_downloaded.push(fav.video_id);
             } else {
                 println!(
                     "[fav] new favorite @{} id={}",
                     fav.username, fav.video_id
                 );
-                let mut fav_video = fav.clone();
-                fav_video.is_fav = true;
-                favorite_videos.push(fav_video);
-                new_count += 1;
             }
+
+            favorite_videos.push(fav_video);
         }
         save_all(&seen_vids)?;
+        for video_id in mark_downloaded {
+            update_download_status("favorite", video_id, DownloadStatus::Downloaded)?;
+        }
         println!(
             "[fav] pass {}: saved seen db, new_or_updated={}",
             pass, new_count

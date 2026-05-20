@@ -10,8 +10,9 @@ use serde::{Deserialize, Serialize};
 pub struct Config{
     pub accounts:Vec<String>,
     pub download_dir:String,
+    #[serde(default)]
+    pub download_fav:bool,
 }
-
 
 pub fn load_config()->Result<Config>{
     let path = config_file()?;

@@ -1,0 +1,2 @@
+- info.log, error.log 
+- custom download dir per user

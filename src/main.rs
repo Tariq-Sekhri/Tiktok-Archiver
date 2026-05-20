@@ -5,19 +5,17 @@ mod download;
 
 use crate::api::videos_from_anchor_links;
 use crate::db::account::{load_tracked_accounts, update_account_state, Account, CountEvent};
-use crate::db::browser::{launch_browser, BrowserSession};
+use crate::db::browser::{launch_browser, scroll_x_times, BrowserSession};
 use crate::db::check_state;
 use crate::db::config::load_config;
 use crate::db::logger::{log, Event, LogLevel};
 use crate::db::video::{append_videos, load_all, save_all, total_videos, Video};
-use crate::discover::fetch_newest_videos;
-use crate::download::{download_pending, download_video, VIDEO_EXT};
+use crate::discover::{fetch_newest_videos, login};
+use crate::download::{download_pending, VIDEO_EXT};
 use anyhow::Context;
 use api::get_new_count;
-use regex::Regex;
 use std::io::IsTerminal;
-use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::path::{PathBuf};
 use std::{env, fs, io, io::Write, process};
 use tokio::time::{sleep, Duration};
 
@@ -83,7 +81,23 @@ async fn timeout(wait_secs: u8) {
     }
     print!("\rdone.        \n");
 }
-
+fn hard_link(fav:Video,vid:Video){
+    let original = PathBuf::from(format!(
+        "{}/{}/{}.{}",
+        load_config().unwrap().download_dir,
+        fav.username,
+        fav.video_id,
+        VIDEO_EXT
+    ));
+    let link = PathBuf::from(format!("{}/favs/{}.{}",
+                                     load_config().unwrap().download_dir,
+                                     fav.video_id,
+                                     VIDEO_EXT
+    ));
+    println!("og:{:?}", original);
+    println!("link:{:?}", link);
+    fs::hard_link(original, link).unwrap();
+}
 async fn default_loop() {
     loop {
         let accounts = match load_tracked_accounts() {
@@ -186,14 +200,10 @@ async fn default_loop() {
         }
         if let Ok(config) = load_config() {
             if config.download_fav {
-                let tab = launch_browser("https://www.tiktok.com", false).unwrap();
-                //navigate to profile
-                // get fav count
-                // (increase, dereacse, same)
 
-                // find videos
-                // go until seen
-                // download
+                fav().await.unwrap();
+
+                    // update hardlinks
             }
         } else {
             log(Event::new(
@@ -242,110 +252,86 @@ fn reconcile_account_state(account: &Account, new_count: i64, unavailable: i64) 
         log(Event::new(msg, LogLevel::CriticalFail));
     }
 }
-async fn open_profile_url() -> BrowserSession {
-    let mut session;
-    if PROFILE_URL.get().is_some() {
-        session = launch_browser(PROFILE_URL.get().unwrap(), false).unwrap();
-    } else {
-        session = launch_browser("https://www.tiktok.com", false).unwrap();
+async fn open_profile() -> BrowserSession {
+    let session = launch_browser("https://www.tiktok.com", false).unwrap();
 
-        timeout(3).await;
-        session
-            .tab
-            .wait_for_element(r#"[data-e2e="nav-profile"]"#)
-            .expect("didnw wait")
-            .click()
-            .expect("counlt click");
-        timeout(3).await;
-        PROFILE_URL.set(session.tab.get_url()).unwrap();
-    }
+    timeout(3).await;
+    session
+        .tab
+        .wait_for_element(r#"[data-e2e="nav-profile"]"#)
+        .expect("didnw wait")
+        .click()
+        .expect("counlt click");
+    timeout(3).await;
     session
         .tab
         .wait_for_xpath(r#"//span[text()="Favorites"]/ancestor::p[@role="tab"]"#)
         .unwrap()
         .click()
         .unwrap();
+    timeout(5).await;
     session
 }
-static PROFILE_URL: OnceLock<String> = OnceLock::new();
 
-async fn get_fav_count(session: BrowserSession) {
-    let text = session
-        .tab
-        .wait_for_element("#posts")
-        .unwrap()
-        .get_inner_text()
-        .unwrap();
-
-    let re = Regex::new(r"Posts\s+(\d+)").unwrap();
-    let count: usize = re
-        .captures(&text)
-        .and_then(|caps| caps.get(1))
-        .map(|m| m.as_str().parse())
-        .transpose()
-        .unwrap()
-        .unwrap_or(0);
-    println!("{count}");
-    println!("{}", session.tab.get_content().unwrap());
+async fn fav()->anyhow::Result<()>{
+    let session = open_profile().await;
+    loop {
+        let html = session.tab.get_content().context("get_content")?;
+        let junk_ids = [
+            7511413375285447958,
+            7074556216227155202,
+            7035790010829769990,
+            7008644040782613765,
+        ];
+        let fav_vids: Vec<Video> = videos_from_anchor_links(&html, true)?
+            .into_iter()
+            .filter(|vid| !junk_ids.contains(&vid.video_id))
+            .collect();
+        let mut seen_vids = load_all()?;
+        let mut new_count = 0;
+        for fav in &fav_vids {
+            if let Some(user) = seen_vids.get_mut(&fav.username) {
+                if let Some(vid) = user.iter_mut().find(|vid| vid.video_id == fav.video_id) {
+                    if !vid.is_fav {
+                        new_count += 1;
+                    }
+                    vid.is_fav = true;
+                } else {
+                    user.push(fav.clone());
+                    new_count += 1;
+                }
+            } else {
+                seen_vids.insert(fav.username.clone(), vec![fav.clone()]);
+                new_count += 1;
+            }
+        }
+        save_all(&seen_vids)?;
+        if new_count >= 1 {
+            scroll_x_times(2, &session)?;
+        } else {
+            return Ok(());
+        }
+    }
 }
+// println!("Press Enter To Exit:");
+// let mut asd = String::new();
+// io::stdin().read_line(&mut asd).unwrap();
 #[tokio::main]
 async fn main() {
-    let session = open_profile_url().await;
 
-    let html = session.tab.get_content().context("get_content").unwrap();
-    let fav_vids = videos_from_anchor_links(&html, true).unwrap();
-    let mut seen_vids = load_all().unwrap();
-    for fav in fav_vids {
-        if let Some(user) = seen_vids.get_mut(&fav.username) {
-            if let Some(vid) = user.iter_mut().find(|vid| vid.video_id == fav.video_id) {
-                //video already exists
-                vid.is_fav = true;
-            } else {
-                user.push(fav.clone())
-            }
-            let original = PathBuf::from(format!(
-                "{}/{}/{}.{}",
-                load_config().unwrap().download_dir,
-                fav.username,
-                fav.video_id,
-                VIDEO_EXT
-            ));
-            let link = PathBuf::from(format!(
-                "{}/favs/{}.{}",
-                load_config().unwrap().download_dir,
-                fav.video_id,
-                VIDEO_EXT
-            ));
-            fs::hard_link(original, link).unwrap();
-        } else {
-            seen_vids.insert(fav.username.clone(), vec![fav.clone()]);
+    let mode = parse_args();
+    println!("Run Mode:{:?}", mode);
+    match mode {
+        RunMode::Default | RunMode::Dev | RunMode::Login => {
+            env::set_var("TTA_SHOW_BROWSER", "1");
         }
-
-        // make hardlink
     }
-    // mark fav
-    // add to exisiting user
-    // create user
-    // make hardlink
-    save_all(&seen_vids).unwrap();
-
-    println!("Press Enter To Exit:");
-    let mut asd = String::new();
-    io::stdin().read_line(&mut asd).unwrap();
-
-    // let mode = parse_args();
-    // println!("Run Mode:{:?}", mode);
-    // match mode {
-    //     RunMode::Default | RunMode::Dev | RunMode::Login => {
-    //         env::set_var("TTA_SHOW_BROWSER", "1");
-    //     }
-    // }
-    // check_state(&mode).await;
-    // match mode {
-    //     RunMode::Login => login().await.unwrap_or_else(|e| {
-    //         let msg = format!("Error logging in: {}", e);
-    //         log(Event::new(msg.clone(), LogLevel::CriticalFail));
-    //     }),
-    //     RunMode::Default | RunMode::Dev => default_loop().await,
-    // }
+    check_state(&mode).await;
+    match mode {
+        RunMode::Login => login().await.unwrap_or_else(|e| {
+            let msg = format!("Error logging in: {}", e);
+            log(Event::new(msg.clone(), LogLevel::CriticalFail));
+        }),
+        RunMode::Default | RunMode::Dev => default_loop().await,
+    }
 }

@@ -545,3 +545,47 @@ pub fn scroll_to_bottom(session: &BrowserSession) -> Result<()> {
     }
     Ok(())
 }
+
+
+
+pub fn scroll_x_times(x:u32, session: &BrowserSession) -> Result<()> {
+        let mut loop_count = 0;
+    loop {
+        if loop_count > x{
+            return Ok(())
+        }
+        let reached_end: bool = session
+            .tab
+            .evaluate(
+                r#"
+                (function() {
+                    const oldHeight = document.body.scrollHeight;
+                    window.scrollTo(0, oldHeight);
+
+                    return new Promise((resolve) => {
+                        // Wait for potential network/DOM update
+                        setTimeout(() => {
+                            const newHeight = document.body.scrollHeight;
+                            const isAtBottom = window.innerHeight + window.scrollY >= newHeight - 10;
+
+                            // Done if height didn't change OR we are physically at the bottom
+                            resolve(newHeight === oldHeight || isAtBottom);
+                        }, 1500); // Increased to 1.5s for TikTok's slow loading
+                    });
+                })()
+                "#,
+                true,
+            )
+            .context("Failed to evaluate scroll script")?
+            .value
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
+        if reached_end {
+            std::thread::sleep(Duration::from_millis(500));
+            break;
+        }
+        loop_count+=1;
+    }
+    Ok(())
+}

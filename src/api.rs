@@ -65,7 +65,7 @@ pub fn videos_from_anchor_links(html: &str, is_fav:bool) -> Result<Vec<Video>> {
             continue;
         }
 
-        for_ret.push(Video::new(format!("https/tiktok.com/@{}/{}", username, id), id.parse()?, username.to_string(), is_fav));
+        for_ret.push(Video::new(format!("https://www.tiktok.com/@{}/video/{}", username, id), id.parse()?, username.to_string(), is_fav));
     }
         Ok(for_ret)
 }

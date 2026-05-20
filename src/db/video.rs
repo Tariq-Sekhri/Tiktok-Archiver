@@ -64,6 +64,7 @@ pub struct Video {
     pub url: String,
     pub video_id: i64,
     pub username: String,
+    #[serde(default)]
     pub is_fav:bool,
     pub download_status: DownloadStatus,
     pub source_available: bool,

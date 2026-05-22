@@ -3,17 +3,25 @@ use chrono::NaiveDateTime;
 use serde_json::{json, Value};
 use std::fmt;
 use std::fs;
+use std::io::Write;
 use std::process;
 
 use crate::db::critical_alert::alert_critical_failure;
 use crate::db::{atomic_write_text, ensure_file, state_dir};
 
+pub const DEV_MODE_ENV: &str = "TTA_DEV";
+
+pub fn dev_mode_enabled() -> bool {
+    matches!(std::env::var(DEV_MODE_ENV).as_deref(), Ok("1"))
+}
 
 #[derive(Clone, PartialEq)]
 pub enum LogLevel {
     CriticalFail,
     Error,
     Info,
+    Console,
+    Dev,
 }
 
 impl fmt::Display for LogLevel {
@@ -22,6 +30,8 @@ impl fmt::Display for LogLevel {
             LogLevel::CriticalFail => write!(f, "CriticalFail"),
             LogLevel::Error => write!(f, "Error"),
             LogLevel::Info => write!(f, "Info"),
+            LogLevel::Console => write!(f, "Console"),
+            LogLevel::Dev => write!(f, "Dev"),
         }
     }
 }
@@ -35,32 +45,70 @@ impl Log {
     pub fn info(message: String) {
         let log = Self {
             message,
-            level:LogLevel::Info,
+            level: LogLevel::Info,
             timestamp: chrono::Local::now().naive_local(),
         };
         log_helper(log);
     }
-    pub fn critical_fail(message:String){
+    pub fn critical_fail(message: String) {
         let log = Self {
             message,
-            level:LogLevel::CriticalFail,
+            level: LogLevel::CriticalFail,
             timestamp: chrono::Local::now().naive_local(),
         };
         log_helper(log);
     }
-    pub fn error(message:String){
+    pub fn error(message: String) {
         let log = Self {
             message,
-            level:LogLevel::Error,
+            level: LogLevel::Error,
             timestamp: chrono::Local::now().naive_local(),
         };
         log_helper(log);
+    }
+    pub fn console(message: String) {
+        let log = Self {
+            message,
+            level: LogLevel::Console,
+            timestamp: chrono::Local::now().naive_local(),
+        };
+        log_helper(log);
+    }
+    pub fn dev(message: String) {
+        if !dev_mode_enabled() {
+            return;
+        }
+        let log = Self {
+            message,
+            level: LogLevel::Dev,
+            timestamp: chrono::Local::now().naive_local(),
+        };
+        log_helper(log);
+    }
+
+    pub fn dev_timing(label: &str, started: std::time::Instant) {
+        if !dev_mode_enabled() {
+            return;
+        }
+        let ms = started.elapsed().as_millis();
+        Self::dev(format!("[timing] {} {}ms", label, ms));
     }
 }
 
-
-
 fn log_helper(log: Log) {
+    let ts_display = log.timestamp.format("%Y-%m-%d %I:%M:%S%.f %p");
+    let formatted = format!("[{}]({}): {}", log.level, ts_display, log.message);
+
+    if log.level == LogLevel::Console {
+        println!("{}", formatted);
+        let _ = std::io::stdout().flush();
+        return;
+    }
+    if log.level == LogLevel::Dev {
+        eprintln!("{}", formatted);
+        return;
+    }
+
     let path = state_dir().join("log.json");
     let _ = ensure_file(&path, "[]\n");
 
@@ -69,12 +117,6 @@ fn log_helper(log: Log) {
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
 
-    let ts_display = log.timestamp.format("%Y-%m-%d %I:%M:%S%.f %p");
-
-    let formatted = format!(
-        "[{}]({}): {}",
-        log.level, ts_display, log.message
-    );
     eprintln!("{}", formatted);
 
     logs.insert(
@@ -99,4 +141,3 @@ fn log_helper(log: Log) {
         process::exit(1);
     }
 }
-

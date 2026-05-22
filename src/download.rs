@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -8,7 +9,10 @@ use crate::db::browser::{load_cookie_params, write_ytdlp_cookie_jar};
 use anyhow::Result;
 use crate::db::config::load_config;
 use crate::db::logger::Log;
-use crate::db::video::{load_all, update_download_status, update_source_available, DownloadStatus, Video};
+use crate::db::video::{
+    load_all, pending_from_map, save_all, update_download_status_in_memory,
+    update_source_available_in_memory, DownloadStatus, Video,
+};
 
 pub const VIDEO_EXT: &str = "mp4";
 
@@ -51,36 +55,53 @@ fn have_video_on_disk(vid: &Video) -> Result<bool> {
     Ok(false)
 }
 
-
-fn download_videos(vids:&Vec<Video>)->Result<()>{
+fn download_videos_in_memory(
+    map: &mut HashMap<String, Vec<Video>>,
+    vids: &[Video],
+) -> Result<bool> {
+    let mut dirty = false;
     for vid in vids {
-        let bucket = if vid.is_fav { "favorite" } else { &vid.username };
+        let bucket = if vid.is_fav {
+            "favorite".to_string()
+        } else {
+            vid.username.clone()
+        };
 
-        if have_video_on_disk(&vid).unwrap_or(false) {
+        if have_video_on_disk(vid).unwrap_or(false) {
             Log::info(format!("had {} on disk", vid.video_id));
-            update_download_status(bucket, vid.video_id, DownloadStatus::Downloaded)?;
+            if update_download_status_in_memory(map, &bucket, vid.video_id, DownloadStatus::Downloaded) {
+                dirty = true;
+            }
             continue;
         }
-        if !vid.source_available || vid.download_status == DownloadStatus::Downloaded {
-            Log::info(format!("Video Unavailable:{}", vid.video_id));
+        if !vid.source_available {
+            continue;
+        }
+        if vid.download_status == DownloadStatus::Downloaded {
             continue;
         }
 
         println!("Downloading:{}", vid.video_id);
-        if let Err(e) = download_video(&vid) {
+        if let Err(e) = download_video(vid) {
             let raw = e.to_string();
             let (user_msg, mark_unavailable) = classify_download_failure(&raw, vid);
-            update_download_status(bucket, vid.video_id, DownloadStatus::DownloadFailed)?;
-            if mark_unavailable {
-                update_source_available(bucket, vid.video_id, false)?;
+            if update_download_status_in_memory(map, &bucket, vid.video_id, DownloadStatus::DownloadFailed) {
+                dirty = true;
+            }
+            if mark_unavailable
+                && update_source_available_in_memory(map, &bucket, vid.video_id, false)
+            {
+                dirty = true;
             }
             Log::error(user_msg.clone());
             continue;
-        };
+        }
         Log::info(format!("Downloaded vid:{:?}:", vid));
-        update_download_status(bucket, vid.video_id, DownloadStatus::Downloaded)?;
+        if update_download_status_in_memory(map, &bucket, vid.video_id, DownloadStatus::Downloaded) {
+            dirty = true;
+        }
     }
-    Ok(())
+    Ok(dirty)
 }
 
 fn is_age_restricted_error(error: &str) -> bool {
@@ -103,7 +124,10 @@ fn classify_download_failure(raw: &str, vid: &Video) -> (String, bool) {
     }
     let mark_unavailable = is_fatal_source_error(raw);
     let user_msg = if mark_unavailable {
-        format!("Video {} (@{}): source unavailable — {}", vid.video_id, vid.username, raw)
+        format!(
+            "Video {} (@{}): source unavailable — {}",
+            vid.video_id, vid.username, raw
+        )
     } else {
         format!("Error downloading {:?}: {}", vid, raw)
     };
@@ -124,26 +148,52 @@ fn is_fatal_source_error(error: &str) -> bool {
         || msg.contains("status code 404")
 }
 
-pub fn download_pending()->Result<()>{
-    let vids: Vec<Video> = load_all()?
-        .into_iter()
-        .flat_map(|(bucket, videos)| {
-            videos.into_iter().filter_map(move |mut vid| {
-                if vid.download_status == DownloadStatus::NotDownloaded
-                    || vid.download_status == DownloadStatus::DownloadFailed
-                {
-                    if bucket == "favorite" {
-                        vid.is_fav = true;
-                    }
-                    Some(vid)
-                } else {
-                    None
-                }
-            })
-        })
-        .collect();
-    download_videos(&vids)?;
+pub fn download_pending_with_map(map: &mut HashMap<String, Vec<Video>>) -> Result<()> {
+    let vids = pending_from_map(map);
+    if vids.is_empty() {
+        return Ok(());
+    }
+    let dirty = download_videos_in_memory(map, &vids)?;
+    if dirty {
+        save_all(map)?;
+    }
     Ok(())
+}
+
+pub fn download_pending_favorites_with_map(map: &mut HashMap<String, Vec<Video>>) -> Result<()> {
+    let vids: Vec<Video> = map
+        .get("favorite")
+        .map(|videos| {
+            videos
+                .iter()
+                .filter_map(|vid| {
+                    if vid.source_available
+                        && (vid.download_status == DownloadStatus::NotDownloaded
+                            || vid.download_status == DownloadStatus::DownloadFailed)
+                    {
+                        let mut out = vid.clone();
+                        out.is_fav = true;
+                        Some(out)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if vids.is_empty() {
+        return Ok(());
+    }
+    let dirty = download_videos_in_memory(map, &vids)?;
+    if dirty {
+        save_all(map)?;
+    }
+    Ok(())
+}
+
+pub fn download_pending() -> Result<()> {
+    let mut map = load_all()?;
+    download_pending_with_map(&mut map)
 }
 
 fn resolve_executable_path(default_name: &str) -> PathBuf {
@@ -172,6 +222,9 @@ fn resolve_executable_path(default_name: &str) -> PathBuf {
 }
 
 pub fn download_video(vid: &Video) -> Result<()> {
+    if !vid.source_available {
+        return Err(anyhow!("source unavailable"));
+    }
     let path = video_file_path(&vid.username, vid.video_id)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;

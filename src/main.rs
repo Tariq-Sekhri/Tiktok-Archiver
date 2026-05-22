@@ -4,21 +4,27 @@ mod discover;
 mod download;
 
 use crate::api::videos_from_anchor_links;
+use crate::api::{fetch_counts_on_session, finish_poll_session, open_poll_session};
 use crate::db::account::{load_tracked_accounts, update_account_state, Account, CountEvent};
-use crate::db::browser::{discovery_headless, launch_browser, scroll_x_times, BrowserSession};
+use crate::db::browser::{open_favorites_on_session, scroll_x_times, BrowserSession};
 use crate::db::check_state;
 use crate::db::config::load_config;
-use crate::db::video::{append_videos, load_all, save_all, total_videos, DownloadStatus, Video};
-use crate::discover::{fetch_newest_videos, login};
-use crate::db::video::update_download_status;
-use crate::download::{download_pending, link_fav_video, video_on_disk, VIDEO_EXT};
+use crate::db::logger::{dev_mode_enabled, Log, LogLevel};
+use crate::db::video::{
+    append_videos_in_memory, bucket_count, load_all, save_all, seen_videos_is_compact,
+    update_download_status_in_memory,
+    DownloadStatus, Video,
+};
+use crate::discover::{fetch_newest_videos_sync, login};
+use crate::download::{download_pending_favorites_with_map, link_fav_video, video_on_disk, VIDEO_EXT};
 use anyhow::Context;
-use api::get_new_count;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::IsTerminal;
+use std::time::Instant;
 use std::{env, fs, io, io::Write, process};
 use tokio::time::{sleep, Duration};
-use crate::db::logger::Log;
+
+const FAVORITE_BUCKET: &str = "favorite";
 
 #[derive(Debug)]
 pub enum RunMode {
@@ -32,7 +38,7 @@ fn print_usage_and_exit() -> ! {
     eprintln!(
         "  login   = explicitly run login flow (for switching accounts or refreshing cookies)"
     );
-    eprintln!("  dev     = default mode with visible browser windows for debugging");
+    eprintln!("  dev     = default mode with visible browser and verbose console tracing");
     process::exit(1);
 }
 
@@ -50,7 +56,7 @@ fn parse_args() -> RunMode {
 }
 
 fn print_how_to_use_and_exit(reason: &str) -> ! {
-    Log::critical_fail(reason.to_string()); 
+    Log::critical_fail(reason.to_string());
     eprintln!("\n[State Check] {}\n", reason);
     eprintln!("How to use, in order:");
     eprintln!("  1) run");
@@ -68,8 +74,8 @@ fn print_how_to_use_and_exit(reason: &str) -> ! {
     process::exit(1);
 }
 
-async fn timeout(wait_secs: u8) {
-    if !io::stdout().is_terminal() {
+async fn timeout(wait_secs: u8, level: LogLevel) {
+    if !io::stdout().is_terminal() || level == LogLevel::Dev {
         sleep(Duration::from_secs(wait_secs as u64)).await;
         return;
     }
@@ -81,132 +87,36 @@ async fn timeout(wait_secs: u8) {
     }
     print!("\rdone.        \n");
 }
-async fn default_loop() {
-    loop {
-        let accounts = match load_tracked_accounts() {
-            Ok(accounts) => accounts,
 
-            Err(e) => {
-                Log::error(format!("Failed to load accounts: {}", e));
-                timeout(5u8).await;
-                continue;
-            }
-        };
-        println!("{:?}", accounts);
-        for account in accounts {
-            let new_count = match get_new_count(&account.name).await {
-                Ok(n) => n,
-                Err(e) => {
-                    Log::error(format!("error getting count{e}"));
-                    continue;
-                }
-            };
-            let seen_map = match load_all() {
-                Ok(m) => m,
-                Err(e) => {
-                    let msg = format!("{}: load_all_seen_videos failed: {}", account.name, e);
-                    Log::critical_fail(msg);
-                    unreachable!()
-                }
-            };
-
-            let existing_videos: Vec<Video> = match seen_map.get(&account.name) {
-                Some(v) => v.clone(),
-                None => {
-                    Log::error(format!(
-                        "{}: no entry in seen_videos, using empty list",
-                        account.name
-                    ));
-                    Vec::new()
-                }
-            };
-
-            let existing_ids: std::collections::HashSet<i64> =
-                existing_videos.iter().map(|v| v.video_id).collect();
-
-            let (unavailable, new_videos): (i64, Vec<Video>) =
-                match CountEvent::observe(account.count, new_count) {
-                    CountEvent::Same => {
-                        println!("{}: Same", account.name);
-                        (account.unavailable, Vec::new())
-                    }
-                    CountEvent::Increased => {
-                        let fetched_videos = match fetch_newest_videos(&account).await {
-                            Ok(v) => v,
-                            Err(e) => {
-                                Log::error(format!("{}: fetch_newest_videos failed: {}", account.name, e));
-                                continue;
-                            }
-                        };
-                        let new_v: Vec<Video> = fetched_videos
-                            .into_iter()
-                            .filter(|v| !existing_ids.contains(&v.video_id))
-                            .collect();
-                        (account.unavailable, new_v)
-                    }
-                    CountEvent::Decreased => {
-                        let unavailable = account.unavailable + (account.count - new_count);
-                        println!(
-                            "[main] {}: count decreased, unavailable incremented by {} -> {}",
-                            account.name,
-                            account.count - new_count,
-                            unavailable
-                        );
-                        (unavailable, Vec::new())
-                    }
-                };
-
-            if !new_videos.is_empty() {
-                if let Err(e) = append_videos(&account.name, &new_videos) {
-                    let msg = format!("{}: append_seen_videos failed: {}", account.name, e);
-                    Log::critical_fail(msg);
-                    continue;
-                }
-            }
-
-            reconcile_account_state(&account, new_count, unavailable);
-
-            if let Err(e) = download_pending() {
-                let msg = format!("Error downloading for {}: {}", account.name, e);
-                Log::error(msg);
-            }
-            sleep(Duration::from_secs(1)).await;
-        }
-        if let Ok(config) = load_config() {
-            println!("fav: {}", config.download_fav );
-            if config.download_fav {
-
-                if let Err(e) = fav().await{
-                    Log::error(format!("Fav Error:{}", e));
-                };
-
-            }
-        } else {
-            Log::error("Config Failed to load".to_string());
-        }
-        timeout(60).await;
-    }
-}
-
-fn reconcile_account_state(account: &Account, new_count: i64, unavailable: i64) {
-    let totals = match total_videos() {
-        Ok(t) => t,
-        Err(e) => {
-            let msg = format!("{}: total_seen_videos failed: {}", account.name, e);
-            Log::critical_fail(msg);
-            unreachable!()
-        }
-    };
-
-    let total_seen_videos_count = *totals.get(&account.name).unwrap_or(&0) as i64;
-
+fn reconcile_account_state(account: &Account, new_count: i64, unavailable: i64, total_seen: usize) {
+    let total_seen_videos_count = total_seen as i64;
+    Log::dev(format!(
+        "@{} reconcile enter: new_count={} unavailable_in={} stored_count={} stored_diff={} stored_unavailable={}",
+        account.name,
+        new_count,
+        unavailable,
+        account.count,
+        account.diff,
+        account.unavailable
+    ));
     let diff = new_count + unavailable - total_seen_videos_count;
+    Log::dev(format!(
+        "@{} reconcile: total_seen={} diff={} (formula: {} + {} - {} = {})",
+        account.name,
+        total_seen_videos_count,
+        diff,
+        new_count,
+        unavailable,
+        total_seen_videos_count,
+        diff
+    ));
 
     if diff < 0 {
         let msg = format!(
             "{}: diff became negative (count_now={}, unavailable={}, total_seen={})",
             account.name, new_count, unavailable, total_seen_videos_count
         );
+        Log::dev(format!("@{} reconcile CRITICAL: {}", account.name, msg));
         Log::critical_fail(msg);
     }
 
@@ -217,57 +127,73 @@ fn reconcile_account_state(account: &Account, new_count: i64, unavailable: i64) 
             "{}: invariant violated (lhs={}, rhs={})",
             account.name, invariant_lhs, total_seen_videos_count
         );
+        Log::dev(format!(
+            "@{} reconcile invariant mismatch: {}",
+            account.name, msg
+        ));
         Log::error(msg);
     }
 
+    Log::dev(format!(
+        "@{} reconcile saving accounts.json: count={} diff={} unavailable={}",
+        account.name, new_count, diff, unavailable
+    ));
     if let Err(e) = update_account_state(account, new_count, diff, unavailable) {
         let msg = format!("Error updating state for @{}: {}", account.name, e);
         Log::critical_fail(msg);
     }
 }
-async fn open_profile() -> BrowserSession {
-    println!("[fav] launching browser...");
-    let session = launch_browser("https://www.tiktok.com", discovery_headless()).unwrap();
 
-    println!("[fav] opening profile...");
-    timeout(3).await;
-    session
-        .tab
-        .wait_for_element(r#"[data-e2e="nav-profile"]"#)
-        .expect("didnw wait")
-        .click()
-        .expect("counlt click");
-    timeout(3).await;
-    println!("[fav] opening favorites tab...");
-    session
-        .tab
-        .wait_for_xpath(r#"//span[text()="Favorites"]/ancestor::p[@role="tab"]"#)
-        .unwrap()
-        .click()
-        .unwrap();
-    timeout(5).await;
-    println!("[fav] favorites page ready");
-    session
+fn fav_scroll_budget(pass: u32) -> u32 {
+    const CAP: u32 = 800;
+    match pass {
+        1 => 3,
+        2 => 12,
+        p => {
+            let exp = (p - 3) as i32;
+            let v = 30.0 * 3.0_f64.powi(exp);
+            (v.round() as u32).clamp(30, CAP)
+        }
+    }
 }
 
-async fn fav()->anyhow::Result<()>{
-    let session = open_profile().await;
-    let mut pass = 0u32;
+fn fav_with_seen(
+    session: &BrowserSession,
+    seen: &mut HashMap<String, Vec<Video>>,
+    download_dir: &str,
+) -> anyhow::Result<bool> {
+    let fav_cycle_t0 = Instant::now();
+    let mut seen_dirty = false;
     let mut done_ids: HashSet<i64> = HashSet::new();
-    let download_dir = load_config()?.download_dir;
+
+    let mut existing_fav_ids: HashSet<i64> = seen
+        .get(FAVORITE_BUCKET)
+        .map(|v| v.iter().map(|x| x.video_id).collect())
+        .unwrap_or_default();
+
+    let mut pass = 0u32;
     loop {
         pass += 1;
-        println!("[fav] pass {}: reading page...", pass);
-        let html = session.tab.get_content().context("get_content")?;
+
+        Log::console(format!("fav pass {}", pass));
+        Log::dev(format!("[fav] pass {}: reading page", pass));
+        let read_t0 = Instant::now();
+        let html = session.tab().get_content().context("get_content")?;
         let fav_vids: Vec<Video> = videos_from_anchor_links(&html)?
             .into_iter()
             .filter(|vid| !done_ids.contains(&vid.video_id))
             .collect();
-        println!("[fav] pass {}: found {} videos on page", pass, fav_vids.len());
-        let mut seen_vids = load_all()?;
-        let favorite_videos = seen_vids.entry("favorite".to_string()).or_default();
-        let existing_fav_ids: HashSet<i64> = favorite_videos.iter().map(|v| v.video_id).collect();
-        let mut new_count = 0;
+        Log::dev_timing("fav_pass_read", read_t0);
+        Log::console(format!("fav pass {} links {}", pass, fav_vids.len()));
+        Log::dev(format!(
+            "[fav] pass {}: found {} videos on page",
+            pass,
+            fav_vids.len()
+        ));
+
+        let process_t0 = Instant::now();
+        let mut new_count = 0u32;
+        let mut batch_new: Vec<Video> = Vec::new();
         let mut mark_downloaded: Vec<i64> = Vec::new();
         for fav in &fav_vids {
             done_ids.insert(fav.video_id);
@@ -283,48 +209,297 @@ async fn fav()->anyhow::Result<()>{
             if video_on_disk(&fav.username, fav.video_id)? {
                 let fav_path = format!("{}/favs/{}.{}", download_dir, fav.video_id, VIDEO_EXT);
                 if !fs::exists(&fav_path)? {
-                    println!(
+                    Log::dev(format!(
                         "[fav] hard_link @{} id={}",
                         fav.username, fav.video_id
-                    );
+                    ));
                     link_fav_video(fav)?;
                 }
                 mark_downloaded.push(fav.video_id);
             } else {
-                println!(
+                Log::dev(format!(
                     "[fav] new favorite @{} id={}",
                     fav.username, fav.video_id
-                );
+                ));
             }
 
-            favorite_videos.push(fav_video);
+            batch_new.push(fav_video);
+            existing_fav_ids.insert(fav.video_id);
         }
-        save_all(&seen_vids)?;
+
+        if !batch_new.is_empty() {
+            let favorite_videos = seen.entry(FAVORITE_BUCKET.to_string()).or_default();
+            for v in batch_new {
+                favorite_videos.push(v);
+            }
+            seen_dirty = true;
+        }
         for video_id in mark_downloaded {
-            update_download_status("favorite", video_id, DownloadStatus::Downloaded)?;
+            if update_download_status_in_memory(
+                seen,
+                FAVORITE_BUCKET,
+                video_id,
+                DownloadStatus::Downloaded,
+            ) {
+                seen_dirty = true;
+            }
         }
-        println!(
-            "[fav] pass {}: saved seen db, new_or_updated={}",
+        Log::dev_timing("fav_pass_process", process_t0);
+
+        if new_count > 0 {
+            Log::console(format!("fav pass {} new {}", pass, new_count));
+        }
+        Log::dev(format!(
+            "[fav] pass {}: processed new={}",
             pass, new_count
-        );
-        if new_count >= 1 {
-            println!("[fav] pass {}: scrolling for more...", pass);
-            scroll_x_times(1+pass*pass*pass, &session)?;
-        } else {
-            println!("[fav] pass {}: no new items, done", pass);
-            println!("[fav] finished after {} passes", pass);
-            return Ok(());
+        ));
+
+        if new_count == 0 {
+            Log::console(format!("fav done {}", pass));
+            Log::dev(format!("[fav] pass {}: no new items, done", pass));
+            break;
         }
+
+        let budget = fav_scroll_budget(pass);
+        Log::console(format!("fav pass {} scroll {}", pass, budget));
+        Log::dev(format!("[fav] pass {}: scroll_x_times {}", pass, budget));
+        let scroll_t0 = Instant::now();
+        scroll_x_times(budget, session)?;
+        Log::dev_timing("fav_pass_scroll", scroll_t0);
+    }
+
+    Log::dev(format!("[fav] finished after {} passes", pass));
+    Log::dev_timing("fav_cycle", fav_cycle_t0);
+    Ok(seen_dirty)
+}
+
+fn run_poll_fav_cycle(
+    accounts: Vec<Account>,
+    names: Vec<String>,
+    download_fav: bool,
+    download_dir: String,
+) -> anyhow::Result<()> {
+    let load_t0 = Instant::now();
+    let mut seen = load_all()?;
+    let rewrite_format = if dev_mode_enabled() {
+        seen_videos_is_compact().unwrap_or(false)
+    } else {
+        seen_videos_is_compact().map(|c| !c).unwrap_or(false)
+    };
+    if rewrite_format && dev_mode_enabled() {
+        Log::dev("seen_videos.json is compact; will rewrite pretty on save".to_string());
+    }
+    Log::dev_timing("load_all", load_t0);
+
+    let session = open_poll_session()?;
+    let mut seen_dirty = false;
+
+    let count_results = fetch_counts_on_session(&session, &names)?;
+    for (account, count_result) in accounts.into_iter().zip(count_results) {
+        Log::dev(format!("@{} polling tiktok video count", account.name));
+        let new_count = match count_result.1 {
+            Ok(n) => n,
+            Err(e) => {
+                let msg = format!("{}", e);
+                Log::error(format!("{}: {}", account.name, msg));
+                Log::dev(format!("@{} get_new_count failed: {}", account.name, msg));
+                Log::console(format!("{}: fail", account.name));
+                continue;
+            }
+        };
+        Log::dev(format!(
+            "@{} tiktok count={} (stored={})",
+            account.name, new_count, account.count
+        ));
+
+        let existing_videos: Vec<Video> = match seen.get(&account.name) {
+            Some(v) => v.clone(),
+            None => {
+                Log::error(format!(
+                    "{}: no entry in seen_videos, using empty list",
+                    account.name
+                ));
+                Vec::new()
+            }
+        };
+
+        let existing_ids: HashSet<i64> = existing_videos.iter().map(|v| v.video_id).collect();
+        Log::dev(format!(
+            "@{} seen_videos entries={} unique_ids={}",
+            account.name,
+            existing_videos.len(),
+            existing_ids.len()
+        ));
+
+        let (unavailable, new_videos): (i64, Vec<Video>) =
+            match CountEvent::observe(account.count, new_count) {
+                CountEvent::Same => {
+                    Log::console(format!("{}: same", account.name));
+                    (account.unavailable, Vec::new())
+                }
+                CountEvent::Increased => {
+                    Log::dev(format!(
+                        "@{} count increased {} -> {}",
+                        account.name, account.count, new_count
+                    ));
+                    let fetched_videos = match fetch_newest_videos_sync(&account) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            Log::error(format!(
+                                "{}: fetch_newest_videos failed: {}",
+                                account.name, e
+                            ));
+                            Log::dev(format!(
+                                "@{} fetch_newest_videos failed: {}",
+                                account.name, e
+                            ));
+                            Log::console(format!("{}: fail", account.name));
+                            continue;
+                        }
+                    };
+                    Log::dev(format!(
+                        "@{} page anchor links parsed: {}",
+                        account.name,
+                        fetched_videos.len()
+                    ));
+                    let new_v: Vec<Video> = fetched_videos
+                        .into_iter()
+                        .filter(|v| !existing_ids.contains(&v.video_id))
+                        .collect();
+                    Log::dev(format!(
+                        "@{} new videos after id filter: {}",
+                        account.name,
+                        new_v.len()
+                    ));
+                    for v in &new_v {
+                        Log::dev(format!("@{} new video id={}", account.name, v.video_id));
+                    }
+                    Log::console(format!("{}: increase", account.name));
+                    (account.unavailable, new_v)
+                }
+                CountEvent::Decreased => {
+                    let unavailable = account.unavailable + (account.count - new_count);
+                    Log::dev(format!(
+                        "@{} count decreased {} -> {}, unavailable {} -> {} (delta={})",
+                        account.name,
+                        account.count,
+                        new_count,
+                        account.unavailable,
+                        unavailable,
+                        account.count - new_count
+                    ));
+                    Log::console(format!("{}: decrease", account.name));
+                    (unavailable, Vec::new())
+                }
+            };
+
+        if !new_videos.is_empty() {
+            Log::dev(format!(
+                "@{} appending {} videos to seen_videos",
+                account.name,
+                new_videos.len()
+            ));
+            append_videos_in_memory(&mut seen, &account.name, &new_videos);
+            seen_dirty = true;
+        }
+
+        let total_seen = bucket_count(&seen, &account.name);
+        reconcile_account_state(&account, new_count, unavailable, total_seen);
+    }
+
+    if download_fav {
+        Log::console("fav start".to_string());
+        let fav_t0 = Instant::now();
+        match open_favorites_on_session(&session) {
+            Ok(()) => match fav_with_seen(&session, &mut seen, &download_dir) {
+                Ok(fav_dirty) => {
+                    if fav_dirty {
+                        seen_dirty = true;
+                    }
+                }
+                Err(e) => Log::error(format!("Fav Error: {}", e)),
+            },
+            Err(e) => Log::error(format!("Fav open Error: {}", e)),
+        }
+        Log::dev_timing("fav_total", fav_t0);
+
+        let dl_t0 = Instant::now();
+        download_pending_favorites_with_map(&mut seen)?;
+        Log::dev_timing("download_pending_fav", dl_t0);
+    }
+
+    finish_poll_session(session);
+
+    if seen_dirty || rewrite_format {
+        let save_t0 = Instant::now();
+        save_all(&seen)?;
+        Log::dev_timing("seen_save", save_t0);
+    }
+
+    Ok(())
+}
+
+async fn default_loop() {
+    loop {
+        let cycle_start = Instant::now();
+        Log::dev(format!("poll cycle start"));
+        let accounts = match load_tracked_accounts() {
+            Ok(accounts) => accounts,
+            Err(e) => {
+                Log::error(format!("Failed to load accounts: {}", e));
+                timeout(5u8, LogLevel::Error).await;
+                continue;
+            }
+        };
+        Log::dev(format!("tracked accounts loaded: count={}", accounts.len()));
+        for account in &accounts {
+            Log::dev(format!(
+                "@{} stored count={} diff={} unavailable={}",
+                account.name, account.count, account.diff, account.unavailable
+            ));
+        }
+
+        let config = match load_config() {
+            Ok(c) => c,
+            Err(e) => {
+                Log::error(format!("Config Failed to load: {}", e));
+                timeout(5u8, LogLevel::Error).await;
+                continue;
+            }
+        };
+
+        let names: Vec<String> = accounts.iter().map(|a| a.name.clone()).collect();
+        Log::console("poll".to_string());
+
+        let download_fav = config.download_fav;
+        let download_dir = config.download_dir.clone();
+
+        match tokio::task::spawn_blocking(move || {
+            run_poll_fav_cycle(accounts, names, download_fav, download_dir)
+        })
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                Log::error(format!("poll/fav cycle failed: {}", e));
+                Log::console("poll fail".to_string());
+            }
+            Err(e) => Log::error(format!("poll/fav task failed: {}", e)),
+        }
+
+        Log::dev_timing("poll_cycle", cycle_start);
+        timeout(60, LogLevel::Console).await;
     }
 }
 
 #[tokio::main]
 async fn main() {
-
     let mode = parse_args();
-    println!("Run Mode:{:?}", mode);
+    Log::console(format!("Tiktok-Archiver 1.1.0 | Run Mode:{:?}", mode));
     if matches!(mode, RunMode::Dev) {
         env::set_var("TTA_SHOW_BROWSER", "1");
+        env::set_var(crate::db::logger::DEV_MODE_ENV, "1");
+        Log::dev("dev mode enabled (console trace only, not written to log.json)".to_string());
     }
     check_state(&mode).await;
     match mode {

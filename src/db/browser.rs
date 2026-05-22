@@ -1,3 +1,4 @@
+use crate::db::logger::Log;
 use crate::db::{atomic_write_text, ensure_file, state_dir};
 use anyhow::{anyhow, Context};
 use anyhow::Result;
@@ -6,9 +7,12 @@ use headless_chrome::{browser, Browser};
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 pub const TIKTOK_ORIGIN: &str = "https://www.tiktok.com";
 const COOKIE_INJECT_CHUNK: usize = 40;
@@ -32,8 +36,200 @@ pub fn discovery_headless() -> bool {
 
 
 pub struct BrowserSession {
-    _browser: Browser,
-    pub tab: Arc<headless_chrome::Tab>,
+    tab: Option<Arc<headless_chrome::Tab>>,
+    browser: Option<Browser>,
+    profile_path: PathBuf,
+    chrome_pid: Option<u32>,
+}
+
+impl BrowserSession {
+    pub fn tab(&self) -> &Arc<headless_chrome::Tab> {
+        self.tab.as_ref().expect("browser session closed")
+    }
+
+    pub fn finish(mut self) {
+        self.finish_with_cleanup(true);
+    }
+
+    pub fn finish_light(mut self) {
+        self.finish_with_cleanup(false);
+    }
+
+    fn finish_with_cleanup(&mut self, aggressive: bool) {
+        if let (Some(tab), Some(browser)) = (self.tab.take(), self.browser.take()) {
+            teardown_browser(tab, browser, &self.profile_path, self.chrome_pid, aggressive);
+        }
+    }
+
+    pub fn navigate_profile(&self, username: &str) -> Result<()> {
+        let url = format!("https://www.tiktok.com/@{}", username);
+        self.tab()
+            .navigate_to(&url)
+            .with_context(|| format!("navigate to {}", url))?;
+        self.tab()
+            .wait_until_navigated()
+            .with_context(|| format!("wait for {}", url))?;
+        std::thread::sleep(Duration::from_millis(500));
+        Ok(())
+    }
+}
+
+pub fn open_favorites_on_session(session: &BrowserSession) -> Result<()> {
+    let t0 = Instant::now();
+    Log::console("fav: profile".to_string());
+    Log::dev("[fav] opening profile".to_string());
+    session
+        .tab()
+        .wait_for_element(r#"[data-e2e="nav-profile"]"#)
+        .context("wait for nav-profile")?
+        .click()
+        .context("click nav-profile")?;
+    std::thread::sleep(Duration::from_secs(1));
+    Log::console("fav: tab".to_string());
+    Log::dev("[fav] opening favorites tab".to_string());
+    session
+        .tab()
+        .wait_for_xpath(r#"//span[text()="Favorites"]/ancestor::p[@role="tab"]"#)
+        .context("wait for Favorites tab")?
+        .click()
+        .context("click Favorites tab")?;
+    std::thread::sleep(Duration::from_secs(1));
+    Log::dev("[fav] favorites page ready".to_string());
+    Log::dev_timing("fav_open", t0);
+    Ok(())
+}
+
+impl Drop for BrowserSession {
+    fn drop(&mut self) {
+        self.finish_with_cleanup(true);
+    }
+}
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+fn chrome_pid_path() -> PathBuf {
+    state_dir().join("chrome.pid")
+}
+
+fn read_stored_chrome_pid() -> Option<u32> {
+    let content = fs::read_to_string(chrome_pid_path()).ok()?;
+    content.trim().parse().ok()
+}
+
+fn write_stored_chrome_pid(pid: u32) {
+    let _ = atomic_write_text(&chrome_pid_path(), &pid.to_string());
+}
+
+fn clear_stored_chrome_pid() {
+    let path = chrome_pid_path();
+    if path.exists() {
+        let _ = fs::remove_file(path);
+    }
+}
+
+fn kill_chrome_pid(pid: u32) {
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = Command::new("kill")
+            .args(["-TERM", &format!("-{pid}")])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    std::thread::sleep(Duration::from_millis(350));
+}
+
+fn kill_chrome_using_profile(profile: &Path) {
+    let profile_str = profile.display().to_string();
+    #[cfg(windows)]
+    {
+        let escaped = profile_str.replace('\'', "''");
+        let script = format!(
+            "$p = '{}'; Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | Where-Object {{ $_.CommandLine -like ('*' + $p + '*') }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}",
+            escaped
+        );
+        let _ = Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = Command::new("pkill")
+            .args(["-f", &profile_str])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    std::thread::sleep(Duration::from_millis(350));
+}
+
+fn profile_lock_present(profile: &Path) -> bool {
+    profile.join("SingletonLock").exists()
+        || profile.join("LOCK").exists()
+        || profile.join("Default").join("LOCK").exists()
+}
+
+fn wait_profile_unlock(profile: &Path, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if !profile_lock_present(profile) {
+            return;
+        }
+        kill_chrome_using_profile(profile);
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+fn cleanup_stale_chrome(profile: &Path) {
+    if let Some(pid) = read_stored_chrome_pid() {
+        kill_chrome_pid(pid);
+    }
+    if profile_lock_present(profile) {
+        kill_chrome_using_profile(profile);
+        wait_profile_unlock(profile, Duration::from_secs(15));
+    }
+    clear_stored_chrome_pid();
+}
+
+fn teardown_browser(
+    tab: Arc<headless_chrome::Tab>,
+    browser: Browser,
+    profile: &Path,
+    chrome_pid: Option<u32>,
+    aggressive: bool,
+) {
+    let _ = tab.close_target();
+    drop(tab);
+    let pid = chrome_pid.or_else(|| browser.get_process_id());
+    drop(browser);
+    if let Some(pid) = pid {
+        kill_chrome_pid(pid);
+    }
+    if let Some(stored) = read_stored_chrome_pid() {
+        if stored != pid.unwrap_or(0) {
+            kill_chrome_pid(stored);
+        }
+    }
+    clear_stored_chrome_pid();
+    if aggressive {
+        kill_chrome_using_profile(profile);
+        wait_profile_unlock(profile, Duration::from_secs(10));
+    } else if profile_lock_present(profile) {
+        wait_profile_unlock(profile, Duration::from_secs(3));
+    }
 }
 pub fn cookies_path() -> Result<String> {
     let path = state_dir().join("saved_cookies.json");
@@ -194,11 +390,11 @@ fn inject_cookies(tab: &headless_chrome::Tab, params: Vec<CookieParam>, cookie_u
             expected.len()
         ));
     }
-    eprintln!(
+    Log::dev(format!(
         "[Browser] injected cookies: {}/{} names present in browser",
         matched,
         expected.len()
-    );
+    ));
     Ok(())
 }
 
@@ -244,8 +440,11 @@ pub fn load_cookie_params() -> Result<Vec<CookieParam>> {
         ));
     }
     if params.is_empty() {
-        eprintln!("  [Load Cookies] No tiktok.com cookies in {}", path);
-        eprintln!("  [Load Cookies] run `cargo run` once to save your cookies (or `cargo run login` to swap accounts): {}", path);
+        Log::dev(format!("  [Load Cookies] No tiktok.com cookies in {}", path));
+        Log::dev(format!(
+            "  [Load Cookies] run `cargo run` once to save your cookies (or `cargo run login` to swap accounts): {}",
+            path
+        ));
     }
     Ok(params)
 }
@@ -334,37 +533,37 @@ pub fn log_auth_storage_status() {
     let cookies_path = dir.join("saved_cookies.json");
     let profile_path = tiktok_profile_path();
 
-    eprintln!("[auth] state directory: {}", dir.display());
-    eprintln!("[auth] cookies file: {}", cookies_path.display());
+    Log::dev(format!("[auth] state directory: {}", dir.display()));
+    Log::dev(format!("[auth] cookies file: {}", cookies_path.display()));
 
     if let Ok(meta) = fs::metadata(&cookies_path) {
         if let Ok(modified) = meta.modified() {
             if let Ok(duration) = modified.elapsed() {
-                eprintln!(
+                Log::dev(format!(
                     "[auth] cookies file age: {}h {}m ago",
                     duration.as_secs() / 3600,
                     (duration.as_secs() % 3600) / 60
-                );
+                ));
             }
         }
     }
 
     match load_cookie_params() {
         Ok(params) => {
-            eprintln!("[auth] cookies in file: {}", params.len());
-            eprintln!(
+            Log::dev(format!("[auth] cookies in file: {}", params.len()));
+            Log::dev(format!(
                 "[auth] session cookies in file: {}",
                 if cookie_params_have_session(&params) {
                     "yes"
                 } else {
                     "no — run `cargo run login`"
                 }
-            );
+            ));
         }
-        Err(e) => eprintln!("[auth] could not read cookies file: {}", e),
+        Err(e) => Log::dev(format!("[auth] could not read cookies file: {}", e)),
     }
 
-    eprintln!(
+    Log::dev(format!(
         "[auth] chrome profile: {} ({})",
         profile_path.display(),
         if profile_path.exists() {
@@ -372,14 +571,14 @@ pub fn log_auth_storage_status() {
         } else {
             "missing — run `cargo run login`"
         }
-    );
+    ));
 
     let alt = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target").join("release").join("state");
     if alt.exists() && alt != dir {
-        eprintln!(
+        Log::dev(format!(
             "[auth] WARNING: ignored duplicate state at {} (release build leftover)",
             alt.display()
-        );
+        ));
     }
 }
 
@@ -434,21 +633,30 @@ fn tiktok_profile_path() -> PathBuf {
     state_dir().join("tiktok_profile")
 }
 
-pub fn launch_browser(url: &str, headless:bool) -> Result<BrowserSession> {
-    let cookie_params =   load_cookie_params()?;
+pub fn launch_browser(url: &str, headless: bool) -> Result<BrowserSession> {
+    launch_browser_with_cleanup(url, headless, true)
+}
 
+pub fn launch_browser_with_cleanup(url: &str, headless: bool, full_cleanup: bool) -> Result<BrowserSession> {
+    let cookie_params = load_cookie_params()?;
+    let profile_path = tiktok_profile_path();
+    if full_cleanup {
+        Log::dev("browser: cleanup".to_string());
+        cleanup_stale_chrome(&profile_path);
+    } else if profile_lock_present(&profile_path) || read_stored_chrome_pid().is_some() {
+        Log::dev("browser: cleanup (lock or stale pid)".to_string());
+        cleanup_stale_chrome(&profile_path);
+    }
+    Log::dev("browser: launch".to_string());
 
-    let profile_dir = {
-            let p = tiktok_profile_path();
-            fs::create_dir_all(&p)?;
-            Some(p)
-    };
-        eprintln!(
-            "[Browser] state={} profile={} cookies_to_inject={}",
-            state_dir().display(),
-            tiktok_profile_path().display(),
-            cookie_params.len()
-        );
+    fs::create_dir_all(&profile_path)?;
+    let profile_dir = Some(profile_path.clone());
+    Log::dev(format!(
+        "[Browser] state={} profile={} cookies_to_inject={}",
+        state_dir().display(),
+        tiktok_profile_path().display(),
+        cookie_params.len()
+    ));
 
 
     let mut builder = browser::LaunchOptionsBuilder::default();
@@ -466,6 +674,10 @@ pub fn launch_browser(url: &str, headless:bool) -> Result<BrowserSession> {
 
     let browser = Browser::new(launch_opts)
         .context("Failed to launch headless_chrome browser")?;
+    let chrome_pid = browser.get_process_id();
+    if let Some(pid) = chrome_pid {
+        write_stored_chrome_pid(pid);
+    }
     let tab = browser
         .new_tab()
         .context("Failed to open new browser tab for TikTok session")?;
@@ -480,11 +692,16 @@ pub fn launch_browser(url: &str, headless:bool) -> Result<BrowserSession> {
             .with_context(|| format!("Timed out waiting for {} before cookie injection", url))?;
         std::thread::sleep(Duration::from_millis(500));
         inject_cookies(&tab, cookie_params, url)?;
+        tab.navigate_to(url)
+            .with_context(|| format!("Failed to navigate to {} after cookie injection", url))?;
+        tab.wait_until_navigated().with_context(|| {
+            format!("Timed out waiting for {} after cookie injection", url)
+        })?;
     } else {
         tab.navigate_to(url)
             .with_context(|| format!("Failed to navigate TikTok tab to URL: {}", url))
             .map_err(|e| {
-                eprintln!("[Browser] navigate_to error for {}: {:#}", url, e);
+                Log::dev(format!("[Browser] navigate_to error for {}: {:#}", url, e));
                 e
             })?;
         tab.wait_until_navigated()
@@ -504,15 +721,17 @@ pub fn launch_browser(url: &str, headless:bool) -> Result<BrowserSession> {
     }
 
     Ok(BrowserSession {
-        _browser: browser,
-        tab,
+        tab: Some(tab),
+        browser: Some(browser),
+        profile_path,
+        chrome_pid,
     })
 }
 
 pub fn scroll_to_bottom(session: &BrowserSession) -> Result<()> {
     loop {
         let reached_end: bool = session
-            .tab
+            .tab()
             .evaluate(
                 r#"
                 (function() {
@@ -520,14 +739,11 @@ pub fn scroll_to_bottom(session: &BrowserSession) -> Result<()> {
                     window.scrollTo(0, oldHeight);
 
                     return new Promise((resolve) => {
-                        // Wait for potential network/DOM update
                         setTimeout(() => {
                             const newHeight = document.body.scrollHeight;
                             const isAtBottom = window.innerHeight + window.scrollY >= newHeight - 10;
-
-                            // Done if height didn't change OR we are physically at the bottom
                             resolve(newHeight === oldHeight || isAtBottom);
-                        }, 1500); // Increased to 1.5s for TikTok's slow loading
+                        }, 1500);
                     });
                 })()
                 "#,
@@ -546,16 +762,14 @@ pub fn scroll_to_bottom(session: &BrowserSession) -> Result<()> {
     Ok(())
 }
 
-
-
-pub fn scroll_x_times(x:u32, session: &BrowserSession) -> Result<()> {
+pub fn scroll_x_times(x: u32, session: &BrowserSession) -> Result<()> {
         let mut loop_count = 0;
     loop {
         if loop_count > x{
             return Ok(())
         }
         let reached_end: bool = session
-            .tab
+            .tab()
             .evaluate(
                 r#"
                 (function() {

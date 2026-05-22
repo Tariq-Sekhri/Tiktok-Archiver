@@ -44,14 +44,8 @@ pub fn state_dir() -> PathBuf {
         return state_dir;
     }
 
-    let manifest_state = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("state");
-
     if cfg!(debug_assertions) {
-        ensure_state_dir(&manifest_state);
-        return manifest_state;
-    }
-
-    if manifest_state.exists() {
+        let manifest_state = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("state");
         ensure_state_dir(&manifest_state);
         return manifest_state;
     }
@@ -102,6 +96,7 @@ pub fn atomic_write_text(path: &Path, contents: &str) -> Result<()> {
 
 pub async fn check_state(mode: &RunMode) {
     let (cookies_path, mut config) = general_check();
+    Log::dev("init ok".to_string());
 
     match mode {
         RunMode::Login => {
@@ -118,11 +113,12 @@ pub async fn check_state(mode: &RunMode) {
                     print_how_to_use_and_exit("Login completed but no cookies were saved. Please try again.");
                 }
             }
+            Log::dev("cookies ok".to_string());
             if let Err(e) = ensure_yt_dlp().await {
                 print_how_to_use_and_exit(&format!("yt-dlp check/install failed: {}", e));
             }
+            Log::dev("yt-dlp ok".to_string());
             config_and_accounts_sync(&mut config).await;
-
         }
     }
 }
@@ -148,10 +144,10 @@ async fn config_and_accounts_sync(config: &mut Config) {
     }
     let state_names: HashSet<String> = accounts.iter().map(|a| a.name.clone()).collect();
     if config_all_names != state_names {
-        println!(
+        Log::dev(format!(
             "[sync] starting reconciliation: config_all_names={:?}, state_names={:?}",
             config_all_names, state_names
-        );
+        ));
 
         let config_only_tracked: Vec<String> = config_tracked_names
             .iter()
@@ -166,19 +162,19 @@ async fn config_and_accounts_sync(config: &mut Config) {
             .cloned()
             .collect();
 
+        let ran_discovery = !config_only_tracked.is_empty();
 
-        let msg = format!(
-            "Pre-Reconciling accounts: config_all_names={:?}, state_names={:?}, config_only_tracked={:?}, state_only={:?}",
+        Log::dev(format!(
+            "[sync] Pre-Reconciling accounts: config_all_names={:?}, state_names={:?}, config_only_tracked={:?}, state_only={:?}",
             config_all_names, state_names, config_only_tracked, state_only
-        );
-        Log::info(msg);
+        ));
 
         for name in config_only_tracked {
-            println!("[sync] first_discovery start for @{}", name);
-            Log::info(format!("[sync] first_discovery start for @{}", name));
+            Log::console(format!("sync {}", name));
+            Log::dev(format!("[sync] first_discovery start for @{}", name));
             match first_discovery(name.clone()).await {
                 Ok((acc,vids))=>{
-                    Log::info(format!(
+                    Log::dev(format!(
                         "[sync] first_discovery success for @{}: count={}, diff={}, unavailable={}, vids={}",
                         acc.name,
                         acc.count,
@@ -194,7 +190,7 @@ async fn config_and_accounts_sync(config: &mut Config) {
                     };
                     if let Err(e) = add_account(&acc) {
                         if e.to_string().contains("account already exists") {
-                            Log::info(format!(
+                            Log::dev(format!(
                                 "[sync] account @{} already exists, applying first_discovery state",
                                 acc.name
                             ));
@@ -210,17 +206,14 @@ async fn config_and_accounts_sync(config: &mut Config) {
                             print_how_to_use_and_exit(&format!("Failed to add account: {}", e));
                         }
                     } else {
-                        Log::info(format!("[sync] added new account @{}", acc.name));
+                        Log::dev(format!("[sync] added new account @{}", acc.name));
                     }
-                    println!("Added Account: {:?}", acc);
+                    Log::dev(format!("[sync] added account: {:?}", acc));
                 }
                 Err(e)=>{print_how_to_use_and_exit(&format!("First discovery failed for @{}: {}", name, e)); }
             }
-            println!("[sync] first_discovery done for @{}", name);
-            Log::info(format!("[sync] first_discovery done for @{}", name));
+            Log::dev(format!("[sync] first_discovery done for @{}", name));
         }
-
-
 
         let mut config_updated = false;
         for name in state_only {
@@ -234,10 +227,13 @@ async fn config_and_accounts_sync(config: &mut Config) {
             if let Err(e) = save_config(config) {
                 print_how_to_use_and_exit(&format!("Failed to save config.yaml during reconciliation: {}", e));
             }
-            println!("[sync] reconciliation updated config.yaml");
+            Log::dev("[sync] reconciliation updated config.yaml".to_string());
         }
 
-        println!("[sync] reconciliation finished");
+        Log::dev("[sync] reconciliation finished".to_string());
+        if ran_discovery || config_updated {
+            Log::console("sync ok".to_string());
+        }
     }
 }
 
@@ -323,6 +319,7 @@ async fn ensure_yt_dlp() -> Result<()> {
     let ready = is_ytdlp_runnable(&ytdlp_path);
 
     if !ready {
+        Log::dev("yt-dlp get".to_string());
         let target = state_dir().join("yt-dlp.exe");
         download_yt_dlp(&target).await?;
         if !is_ytdlp_runnable(&target) {

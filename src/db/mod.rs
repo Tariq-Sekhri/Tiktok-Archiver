@@ -1,29 +1,29 @@
+//v0
 pub mod account;
-pub mod browser;
 pub mod logger;
 pub mod config;
 pub mod critical_alert;
 pub mod video;
 
-use std::{fs, path::{PathBuf, Path}};
-use std::collections::{HashMap, HashSet};
+use std::{fs, path::{Path, PathBuf}};
+use std::collections::HashSet;
 use std::process::Command;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::sync::OnceLock;
 use crate::{print_how_to_use_and_exit, RunMode};
-use crate::db::browser::{cookies_have_any, log_auth_storage_status};
-use crate::db::config::{load_config, save_config, account_name, is_tracked, Config};
+use crate::browser::{cookies_have_any, log_auth_storage_status};
+use crate::db::config::{account_name, is_tracked, load_config, save_config, Config};
 use crate::db::account::{account_file, add_account, load_accounts, update_account_state};
 use crate::db::logger::Log;
 use anyhow::Result;
 use anyhow::anyhow;
 use crate::discover::{first_discovery, login};
 use tokio::io::AsyncWriteExt;
-use crate::db::video::{append_videos, save_all, videos_file};
+use crate::db::video::{append_videos, load_all, save_all, videos_file};
 
 static YT_DLP_READY: OnceLock<()> = OnceLock::new();
-
+//v1
 fn ensure_state_dir(state_dir: &Path) {
     if state_dir.exists() {
         return;
@@ -36,26 +36,20 @@ fn ensure_state_dir(state_dir: &Path) {
         ));
     }
 }
-
+//v0
 pub fn state_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("TTA_STATE_DIR") {
-        let state_dir = PathBuf::from(dir);
-        ensure_state_dir(&state_dir);
-        return state_dir;
-    }
-
     if cfg!(debug_assertions) {
         let manifest_state = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("state");
         ensure_state_dir(&manifest_state);
         return manifest_state;
     }
-
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
     let exe_state = exe.parent().unwrap_or_else(|| Path::new(".")).join("state");
     ensure_state_dir(&exe_state);
     exe_state
 }
 
+//v0
 pub fn ensure_file(path: &PathBuf, default_contents: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -70,6 +64,7 @@ pub fn ensure_file(path: &PathBuf, default_contents: &str) -> Result<()> {
     Ok(())
 }
 
+//v0
 pub fn atomic_write_text(path: &Path, contents: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -93,7 +88,7 @@ pub fn atomic_write_text(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
-
+//v0
 pub async fn check_state(mode: &RunMode) {
     let (cookies_path, mut config) = general_check();
     Log::dev("init ok".to_string());
@@ -113,16 +108,14 @@ pub async fn check_state(mode: &RunMode) {
                     print_how_to_use_and_exit("Login completed but no cookies were saved. Please try again.");
                 }
             }
-            Log::dev("cookies ok".to_string());
             if let Err(e) = ensure_yt_dlp().await {
                 print_how_to_use_and_exit(&format!("yt-dlp check/install failed: {}", e));
             }
-            Log::dev("yt-dlp ok".to_string());
             config_and_accounts_sync(&mut config).await;
         }
     }
 }
-
+//v0
 async fn config_and_accounts_sync(config: &mut Config) {
     let accounts = match load_accounts() {
         Ok(a) => a,
@@ -182,12 +175,9 @@ async fn config_and_accounts_sync(config: &mut Config) {
                         acc.unavailable,
                         vids.len()
                     ));
-                    if append_videos(&acc.name.to_string(), &vids).is_err() {
-                        println!("Error Appending");
-                        if let Err(e) = save_all(&HashMap::from([(acc.name.clone(), vids.clone())])) {
-                            print_how_to_use_and_exit(&format!("Failed to save seen videos: {}", e));
-                        }
-                    };
+                    let mut seen_vids = load_all().unwrap();
+                     append_videos(&mut seen_vids,&acc.name.to_string(), &vids);
+                    save_all(&seen_vids).unwrap();
                     if let Err(e) = add_account(&acc) {
                         if e.to_string().contains("account already exists") {
                             Log::dev(format!(
@@ -238,7 +228,7 @@ async fn config_and_accounts_sync(config: &mut Config) {
 }
 
 
-
+//v0
 fn general_check() -> (PathBuf, Config) {
     let state_dir = state_dir();
 
@@ -267,7 +257,8 @@ fn general_check() -> (PathBuf, Config) {
     (cookies_path, config)
 }
 
-fn resolve_executable_path(default_name: &str) -> PathBuf {
+//v1
+pub fn resolve_executable_path(default_name: &str) -> PathBuf {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let candidate = dir.join("state").join(default_name);
@@ -280,10 +271,18 @@ fn resolve_executable_path(default_name: &str) -> PathBuf {
             }
         }
     }
+    if cfg!(debug_assertions) {
+        if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
+            let candidate = PathBuf::from(manifest).join("state").join(default_name);
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
 
     PathBuf::from(default_name)
 }
-
+//v1
 async fn download_yt_dlp(dest: &PathBuf) -> Result<()> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
@@ -310,6 +309,7 @@ async fn download_yt_dlp(dest: &PathBuf) -> Result<()> {
     Ok(())
 }
 
+//v1
 async fn ensure_yt_dlp() -> Result<()> {
     if YT_DLP_READY.get().is_some() {
         return Ok(());
@@ -330,10 +330,11 @@ async fn ensure_yt_dlp() -> Result<()> {
     let _ = YT_DLP_READY.set(());
     Ok(())
 }
-
-fn is_ytdlp_runnable(path: &PathBuf) -> bool {
+//v1
+fn is_ytdlp_runnable(path: &PathBuf) -> bool   {
     let mut check_cmd = Command::new(path);
     check_cmd.arg("--version");
+    //suppress cmd showing
     #[cfg(windows)]
     check_cmd.creation_flags(0x08000000);
     match check_cmd.output() {

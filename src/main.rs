@@ -1,38 +1,32 @@
-mod api;
+//v0
 mod db;
 mod discover;
 mod download;
+pub mod browser;
 
-use crate::api::videos_from_anchor_links;
-use crate::api::{fetch_counts_on_session, finish_poll_session, open_poll_session};
 use crate::db::account::{load_tracked_accounts, update_account_state, Account, CountEvent};
-use crate::db::browser::{open_favorites_on_session, scroll_x_times, BrowserSession};
 use crate::db::check_state;
 use crate::db::config::load_config;
-use crate::db::logger::{dev_mode_enabled, Log, LogLevel};
-use crate::db::video::{
-    append_videos_in_memory, bucket_count, load_all, save_all, seen_videos_is_compact,
-    update_download_status_in_memory,
-    DownloadStatus, Video,
-};
-use crate::discover::{fetch_newest_videos_sync, login};
-use crate::download::{download_pending_favorites_with_map, link_fav_video, video_on_disk, VIDEO_EXT};
-use anyhow::Context;
-use std::collections::{HashMap, HashSet};
+use crate::db::logger::{Log, LogLevel};
+use crate::db::video::{append_videos, bucket_count, load_all, save_all, Video};
+use crate::discover::{fav_with_seen, fetch_counts, fetch_newest_videos_sync, login};
+use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::time::Instant;
-use std::{env, fs, io, io::Write, process};
+use std::{env, io, io::Write, process};
 use tokio::time::{sleep, Duration};
+use browser::navigate_to_fav;
+use crate::browser::{is_headless, launch_browser};
+use crate::download::download_pending_favorites;
 
-const FAVORITE_BUCKET: &str = "favorite";
-
+//v1
 #[derive(Debug)]
 pub enum RunMode {
     Login,
     Default,
     Dev,
 }
-
+//v1
 fn print_usage_and_exit() -> ! {
     eprintln!("  no args = default mode");
     eprintln!(
@@ -41,7 +35,7 @@ fn print_usage_and_exit() -> ! {
     eprintln!("  dev     = default mode with visible browser and verbose console tracing");
     process::exit(1);
 }
-
+//v1
 fn parse_args() -> RunMode {
     let args: Vec<String> = env::args().collect();
     if let Some(arg) = args.get(1) {
@@ -54,7 +48,7 @@ fn parse_args() -> RunMode {
         RunMode::Default
     }
 }
-
+//v1
 fn print_how_to_use_and_exit(reason: &str) -> ! {
     Log::critical_fail(reason.to_string());
     eprintln!("\n[State Check] {}\n", reason);
@@ -73,7 +67,7 @@ fn print_how_to_use_and_exit(reason: &str) -> ! {
     eprintln!("     - Explicitly run the login flow to switch accounts or refresh cookies.");
     process::exit(1);
 }
-
+//v1
 async fn timeout(wait_secs: u8, level: LogLevel) {
     if !io::stdout().is_terminal() || level == LogLevel::Dev {
         sleep(Duration::from_secs(wait_secs as u64)).await;
@@ -87,7 +81,7 @@ async fn timeout(wait_secs: u8, level: LogLevel) {
     }
     print!("\rdone.        \n");
 }
-
+//v0
 fn reconcile_account_state(account: &Account, new_count: i64, unavailable: i64, total_seen: usize) {
     let total_seen_videos_count = total_seen as i64;
     Log::dev(format!(
@@ -144,157 +138,18 @@ fn reconcile_account_state(account: &Account, new_count: i64, unavailable: i64, 
     }
 }
 
-fn fav_scroll_budget(pass: u32) -> u32 {
-    const CAP: u32 = 800;
-    match pass {
-        1 => 3,
-        2 => 12,
-        p => {
-            let exp = (p - 3) as i32;
-            let v = 30.0 * 3.0_f64.powi(exp);
-            (v.round() as u32).clamp(30, CAP)
-        }
-    }
-}
 
-fn fav_with_seen(
-    session: &BrowserSession,
-    seen: &mut HashMap<String, Vec<Video>>,
-    download_dir: &str,
-) -> anyhow::Result<bool> {
-    let fav_cycle_t0 = Instant::now();
-    let mut seen_dirty = false;
-    let mut done_ids: HashSet<i64> = HashSet::new();
-
-    let mut existing_fav_ids: HashSet<i64> = seen
-        .get(FAVORITE_BUCKET)
-        .map(|v| v.iter().map(|x| x.video_id).collect())
-        .unwrap_or_default();
-
-    let mut pass = 0u32;
-    loop {
-        pass += 1;
-
-        Log::console(format!("fav pass {}", pass));
-        Log::dev(format!("[fav] pass {}: reading page", pass));
-        let read_t0 = Instant::now();
-        let html = session.tab().get_content().context("get_content")?;
-        let fav_vids: Vec<Video> = videos_from_anchor_links(&html)?
-            .into_iter()
-            .filter(|vid| !done_ids.contains(&vid.video_id))
-            .collect();
-        Log::dev_timing("fav_pass_read", read_t0);
-        Log::console(format!("fav pass {} links {}", pass, fav_vids.len()));
-        Log::dev(format!(
-            "[fav] pass {}: found {} videos on page",
-            pass,
-            fav_vids.len()
-        ));
-
-        let process_t0 = Instant::now();
-        let mut new_count = 0u32;
-        let mut batch_new: Vec<Video> = Vec::new();
-        let mut mark_downloaded: Vec<i64> = Vec::new();
-        for fav in &fav_vids {
-            done_ids.insert(fav.video_id);
-
-            if existing_fav_ids.contains(&fav.video_id) {
-                continue;
-            }
-
-            new_count += 1;
-            let mut fav_video = fav.clone();
-            fav_video.is_fav = true;
-
-            if video_on_disk(&fav.username, fav.video_id)? {
-                let fav_path = format!("{}/favs/{}.{}", download_dir, fav.video_id, VIDEO_EXT);
-                if !fs::exists(&fav_path)? {
-                    Log::dev(format!(
-                        "[fav] hard_link @{} id={}",
-                        fav.username, fav.video_id
-                    ));
-                    link_fav_video(fav)?;
-                }
-                mark_downloaded.push(fav.video_id);
-            } else {
-                Log::dev(format!(
-                    "[fav] new favorite @{} id={}",
-                    fav.username, fav.video_id
-                ));
-            }
-
-            batch_new.push(fav_video);
-            existing_fav_ids.insert(fav.video_id);
-        }
-
-        if !batch_new.is_empty() {
-            let favorite_videos = seen.entry(FAVORITE_BUCKET.to_string()).or_default();
-            for v in batch_new {
-                favorite_videos.push(v);
-            }
-            seen_dirty = true;
-        }
-        for video_id in mark_downloaded {
-            if update_download_status_in_memory(
-                seen,
-                FAVORITE_BUCKET,
-                video_id,
-                DownloadStatus::Downloaded,
-            ) {
-                seen_dirty = true;
-            }
-        }
-        Log::dev_timing("fav_pass_process", process_t0);
-
-        if new_count > 0 {
-            Log::console(format!("fav pass {} new {}", pass, new_count));
-        }
-        Log::dev(format!(
-            "[fav] pass {}: processed new={}",
-            pass, new_count
-        ));
-
-        if new_count == 0 {
-            Log::console(format!("fav done {}", pass));
-            Log::dev(format!("[fav] pass {}: no new items, done", pass));
-            break;
-        }
-
-        let budget = fav_scroll_budget(pass);
-        Log::console(format!("fav pass {} scroll {}", pass, budget));
-        Log::dev(format!("[fav] pass {}: scroll_x_times {}", pass, budget));
-        let scroll_t0 = Instant::now();
-        scroll_x_times(budget, session)?;
-        Log::dev_timing("fav_pass_scroll", scroll_t0);
-    }
-
-    Log::dev(format!("[fav] finished after {} passes", pass));
-    Log::dev_timing("fav_cycle", fav_cycle_t0);
-    Ok(seen_dirty)
-}
-
-fn run_poll_fav_cycle(
-    accounts: Vec<Account>,
-    names: Vec<String>,
-    download_fav: bool,
-    download_dir: String,
-) -> anyhow::Result<()> {
+//v0
+fn run_poll_fav_cycle(accounts: Vec<Account>,names: Vec<String>,download_fav: bool, download_dir: String, ) -> anyhow::Result<()> {
     let load_t0 = Instant::now();
-    let mut seen = load_all()?;
-    let rewrite_format = if dev_mode_enabled() {
-        seen_videos_is_compact().unwrap_or(false)
-    } else {
-        seen_videos_is_compact().map(|c| !c).unwrap_or(false)
-    };
-    if rewrite_format && dev_mode_enabled() {
-        Log::dev("seen_videos.json is compact; will rewrite pretty on save".to_string());
-    }
+    let mut seen_vids = load_all()?;
+
     Log::dev_timing("load_all", load_t0);
 
-    let session = open_poll_session()?;
+    let session = launch_browser("a", is_headless())?;
     let mut seen_dirty = false;
 
-    let count_results = fetch_counts_on_session(&session, &names)?;
+    let count_results = fetch_counts(&session, &names)?;
     for (account, count_result) in accounts.into_iter().zip(count_results) {
         Log::dev(format!("@{} polling tiktok video count", account.name));
         let new_count = match count_result.1 {
@@ -312,7 +167,7 @@ fn run_poll_fav_cycle(
             account.name, new_count, account.count
         ));
 
-        let existing_videos: Vec<Video> = match seen.get(&account.name) {
+        let existing_videos: Vec<Video> = match seen_vids.get(&account.name) {
             Some(v) => v.clone(),
             None => {
                 Log::error(format!(
@@ -399,19 +254,19 @@ fn run_poll_fav_cycle(
                 account.name,
                 new_videos.len()
             ));
-            append_videos_in_memory(&mut seen, &account.name, &new_videos);
+            append_videos(&mut seen_vids, &account.name, &new_videos);
             seen_dirty = true;
         }
 
-        let total_seen = bucket_count(&seen, &account.name);
+        let total_seen = bucket_count(&seen_vids, &account.name);
         reconcile_account_state(&account, new_count, unavailable, total_seen);
     }
 
     if download_fav {
         Log::console("fav start".to_string());
         let fav_t0 = Instant::now();
-        match open_favorites_on_session(&session) {
-            Ok(()) => match fav_with_seen(&session, &mut seen, &download_dir) {
+        match navigate_to_fav(&session) {
+            Ok(()) => match fav_with_seen(&session, &mut seen_vids, &download_dir) {
                 Ok(fav_dirty) => {
                     if fav_dirty {
                         seen_dirty = true;
@@ -424,25 +279,28 @@ fn run_poll_fav_cycle(
         Log::dev_timing("fav_total", fav_t0);
 
         let dl_t0 = Instant::now();
-        download_pending_favorites_with_map(&mut seen)?;
+        download_pending_favorites(&mut seen_vids)?;
         Log::dev_timing("download_pending_fav", dl_t0);
     }
 
-    finish_poll_session(session);
 
-    if seen_dirty || rewrite_format {
+    if seen_dirty  {
         let save_t0 = Instant::now();
-        save_all(&seen)?;
+        save_all(&seen_vids)?;
         Log::dev_timing("seen_save", save_t0);
     }
 
     Ok(())
 }
-
+//v0
 async fn default_loop() {
     loop {
+        // get start time
         let cycle_start = Instant::now();
-        Log::dev(format!("poll cycle start"));
+        Log::dev("poll cycle start".to_string());
+
+
+        // get accounts
         let accounts = match load_tracked_accounts() {
             Ok(accounts) => accounts,
             Err(e) => {
@@ -451,6 +309,8 @@ async fn default_loop() {
                 continue;
             }
         };
+
+        //get diff
         Log::dev(format!("tracked accounts loaded: count={}", accounts.len()));
         for account in &accounts {
             Log::dev(format!(
@@ -458,7 +318,7 @@ async fn default_loop() {
                 account.name, account.count, account.diff, account.unavailable
             ));
         }
-
+        // get config
         let config = match load_config() {
             Ok(c) => c,
             Err(e) => {
@@ -467,13 +327,13 @@ async fn default_loop() {
                 continue;
             }
         };
-
+        //
         let names: Vec<String> = accounts.iter().map(|a| a.name.clone()).collect();
         Log::console("poll".to_string());
 
         let download_fav = config.download_fav;
         let download_dir = config.download_dir.clone();
-
+        // main vody
         match tokio::task::spawn_blocking(move || {
             run_poll_fav_cycle(accounts, names, download_fav, download_dir)
         })
@@ -491,14 +351,14 @@ async fn default_loop() {
         timeout(60, LogLevel::Console).await;
     }
 }
-
+//v1
 #[tokio::main]
 async fn main() {
     let mode = parse_args();
     Log::console(format!("Tiktok-Archiver 1.1.0 | Run Mode:{:?}", mode));
     if matches!(mode, RunMode::Dev) {
         env::set_var("TTA_SHOW_BROWSER", "1");
-        env::set_var(crate::db::logger::DEV_MODE_ENV, "1");
+        env::set_var(db::logger::DEV_MODE_ENV, "1");
         Log::dev("dev mode enabled (console trace only, not written to log.json)".to_string());
     }
     check_state(&mode).await;

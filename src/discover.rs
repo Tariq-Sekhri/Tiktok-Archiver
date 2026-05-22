@@ -50,7 +50,7 @@ pub async fn first_discovery(username:String) -> Result<(Account, Vec<Video>)> {
         "[discover] first_discovery @{}",
         username
     ));
-    let session = launch_browser(&format!("https://www.tiktok.com/@{}", &username), todo!())?;
+    let session = launch_browser(&format!("https://www.tiktok.com/@{}", &username), is_headless())?;
     let result = (|| {
         scroll_to_bottom(&session)?;
         let html = session.tab().get_content().context("get_content")?;
@@ -108,7 +108,7 @@ pub async fn login() -> Result<()> {
         .tab()
         .wait_until_navigated()
         .context("timed out waiting for tiktok.com after login")?;
-    std::thread::sleep(Duration::from_secs(2));
+    tokio::time::sleep(Duration::from_secs(2)).await;
 
     let cookies = cookie_to_param(session.tab().get_cookies().context("get_cookies")?);
     if cookies.is_empty() {
@@ -477,57 +477,6 @@ pub fn fetch_counts(
     Ok(out)
 }
 
-pub fn fetch_poll_counts(usernames: &[String]) -> Result<Vec<(String, Result<i64>)>> {
-    let t0 = Instant::now();
-    let session = launch_browser("idk", is_headless())?;
-    let out = fetch_counts(&session, usernames)?;
-    Log::dev_timing("poll_browser_session", t0);
-    Ok(out)
-}
 
-fn get_new_count_sync(username: &str) -> Result<i64> {
-    let url = format!("https://www.tiktok.com/@{}", username);
-    Log::dev(format!(
-        "[api] get_new_count @{} url={}",
-        username,
-        url,
-    ));
-    let session = launch_browser(&url, is_headless())?;
-    let result = get_new_count_with_session(&session, username);
-    result
-}
 
-pub async fn get_new_count(username: &str) -> Result<i64> {
-    let user = username.to_string();
-    match tokio::time::timeout(
-        ACCOUNT_FETCH_TIMEOUT,
-        tokio::task::spawn_blocking(move || get_new_count_sync(&user)),
-    )
-        .await
-    {
-        Ok(Ok(inner)) => inner,
-        Ok(Err(e)) => Err(anyhow!("@{} fetch task failed: {}", username, e)),
-        Err(_) => Err(anyhow!(
-            "@{} timed out after {}s",
-            username,
-            ACCOUNT_FETCH_TIMEOUT.as_secs()
-        )),
-    }
-}
-
-pub async fn fetch_poll_counts_async(usernames: Vec<String>) -> Result<Vec<(String, Result<i64>)>> {
-    match tokio::time::timeout(
-        POLL_FETCH_TIMEOUT,
-        tokio::task::spawn_blocking(move || fetch_poll_counts(&usernames)),
-    )
-        .await
-    {
-        Ok(Ok(inner)) => inner,
-        Ok(Err(e)) => Err(anyhow!("poll count task failed: {}", e)),
-        Err(_) => Err(anyhow!(
-            "poll counts timed out after {}s",
-            POLL_FETCH_TIMEOUT.as_secs()
-        )),
-    }
-}
 

@@ -1,5 +1,5 @@
 //v0
-use crate::db::logger::Log;
+use crate::db::logger::{Log};
 use crate::db::{atomic_write_text, ensure_file, state_dir};
 use anyhow::{anyhow, Context};
 use anyhow::Result;
@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+use crate::DEV_MODE;
 
 pub const TIKTOK_ORIGIN: &str = "https://www.tiktok.com";
 
@@ -35,7 +36,7 @@ impl BrowserSession {
     }
 }
 pub fn is_headless()->bool{
-    if cfg!(debug_assertions){
+    if cfg!(debug_assertions) || *DEV_MODE.get().expect("TODO: eror message"){
         true
     }else{
         false
@@ -43,7 +44,7 @@ pub fn is_headless()->bool{
 
 }
 
-//v0
+//v1
 pub fn navigate_to_fav(session: &BrowserSession) -> Result<()> {
     let t0 = Instant::now();
     Log::console("fav: profile".to_string());
@@ -548,7 +549,7 @@ pub fn launch_browser(url: &str, headless: bool) -> Result<BrowserSession> {
         browser: Some(browser),
     })
 }
-
+//v1
 pub fn scroll_to_bottom(session: &BrowserSession) -> Result<()> {
     loop {
         let reached_end: bool = session
@@ -582,7 +583,7 @@ pub fn scroll_to_bottom(session: &BrowserSession) -> Result<()> {
     }
     Ok(())
 }
-
+//v1
 pub fn scroll_x_times(x: u32, session: &BrowserSession) -> Result<()> {
         let mut loop_count = 0;
     loop {

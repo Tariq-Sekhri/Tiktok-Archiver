@@ -8,11 +8,10 @@ use std::process;
 
 use crate::db::critical_alert::alert_critical_failure;
 use crate::db::{atomic_write_text, ensure_file, state_dir};
-
-pub const DEV_MODE_ENV: &str = "TTA_DEV";
+use crate::DEV_MODE;
 
 pub fn dev_mode_enabled() -> bool {
-    matches!(std::env::var(DEV_MODE_ENV).as_deref(), Ok("1"))
+    *DEV_MODE.get().unwrap()
 }
 
 #[derive(Clone, PartialEq)]

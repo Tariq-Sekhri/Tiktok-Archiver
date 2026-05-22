@@ -91,19 +91,8 @@ fn download_videos(
     Ok(dirty)
 }
 
-fn is_age_restricted_error(error: &str) -> bool {
-    let msg = error.to_ascii_lowercase();
-    msg.contains("age-restricted")
-        || msg.contains("age restricted")
-        || msg.contains("this post is age-restricted")
-}
 
-fn age_restricted_user_message(vid: &Video) -> String {
-    format!(
-        "Video {} (@{}): Post unavailable — this post is age-restricted. TikTok blocks it on web without a logged-in account that can view mature content. URL: {}. Log in on tiktok.com on this PC (same account as your phone), confirm the video plays in the browser, then run `cargo run login` to refresh archiver cookies.",
-        vid.video_id, vid.username, vid.url
-    )
-}
+
 
 
 
@@ -192,9 +181,7 @@ pub fn download_video(vid: &Video) -> Result<()> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
         let combined = format!("{}\n{}", stderr, stdout);
-        if is_age_restricted_error(&combined) {
-            return Err(anyhow!(age_restricted_user_message(vid)));
-        }
+
         Err(anyhow!(format!("yt-dlp: {}", stderr.trim())))
     }
 }

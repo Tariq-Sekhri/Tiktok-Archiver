@@ -11,7 +11,7 @@ use crate::db::{atomic_write_text, ensure_file, state_dir};
 use crate::DEV_MODE;
 
 pub fn dev_mode_enabled() -> bool {
-    *DEV_MODE.get().unwrap()
+    *DEV_MODE.get().unwrap_or(&false)
 }
 
 #[derive(Clone, PartialEq)]

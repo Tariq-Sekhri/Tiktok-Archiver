@@ -160,7 +160,10 @@ async fn config_and_accounts_sync(config: &mut Config) {
             config_all_names, state_names, config_only_tracked, state_only
         ));
         Log::dev(format!("headless:{}", is_headless()) );
-        let session = launch_browser("https://www.tiktok.com/", is_headless()).unwrap();
+        let session = match launch_browser("https://www.tiktok.com/", is_headless()) {
+            Ok(s) => s,
+            Err(e) => print_how_to_use_and_exit(&format!("Failed to launch browser for sync: {}", e)),
+        };
         for name in config_only_tracked {
             Log::console(format!("sync {}", name));
             Log::dev(format!("[sync] first_discovery start for @{}", name));
@@ -174,9 +177,20 @@ async fn config_and_accounts_sync(config: &mut Config) {
                         acc.unavailable,
                         vids.len()
                     ));
-                    let mut seen_vids = load_all().unwrap();
-                     append_videos(&mut seen_vids,&acc.name.to_string(), &vids);
-                    save_all(&seen_vids).unwrap();
+                    let mut seen_vids = match load_all() {
+                        Ok(v) => v,
+                        Err(e) => print_how_to_use_and_exit(&format!(
+                            "Failed to load seen_videos.json: {}",
+                            e
+                        )),
+                    };
+                    append_videos(&mut seen_vids, &acc.name.to_string(), &vids);
+                    if let Err(e) = save_all(&seen_vids) {
+                        print_how_to_use_and_exit(&format!(
+                            "Failed to save seen_videos.json: {}",
+                            e
+                        ));
+                    }
                     if let Err(e) = add_account(&acc) {
                         if e.to_string().contains("account already exists") {
                             Log::dev(format!(

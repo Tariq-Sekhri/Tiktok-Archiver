@@ -2,7 +2,7 @@
 use anyhow::{anyhow, Context, Result};
 use headless_chrome::{browser, Browser, protocol::cdp::Network::{Cookie, CookieParam, CookieSameSite, SetCookies}};
 use std::{collections::HashSet, ffi::OsStr, fs, path::PathBuf, sync::Arc, time::{Duration, Instant}};
-use crate::{db::{atomic_write_text, ensure_file, logger::Log, state_dir}, DEV_MODE};
+use crate::db::{atomic_write_text, ensure_file, logger::{dev_mode_enabled, Log}, state_dir};
 
 const SESSION_COOKIE_NAMES: &[&str] = &["sid_tt", "sessionid", "sid_guard", "uid_tt", "tt_session_tlb_tag"];
 
@@ -13,13 +13,15 @@ pub struct BrowserSession {
 }
 
 impl BrowserSession {
-    pub fn tab(&self) -> &Arc<headless_chrome::Tab> {
-        self.tab.as_ref().expect("browser session closed")
+    pub fn tab(&self) -> Result<&Arc<headless_chrome::Tab>> {
+        self.tab
+            .as_ref()
+            .ok_or_else(|| anyhow!("browser session closed"))
     }
 }
 //v1
 pub fn is_headless()->bool{
-    if cfg!(debug_assertions) || *DEV_MODE.get().expect("TODO: eror message"){
+    if cfg!(debug_assertions) || dev_mode_enabled() {
         false
     }else{
         true
@@ -33,7 +35,7 @@ pub fn navigate_to_fav(session: &BrowserSession) -> Result<()> {
     Log::console("fav: profile".to_string());
     Log::dev("[fav] opening profile".to_string());
     session
-        .tab()
+        .tab()?
         .wait_for_element(r#"[data-e2e="nav-profile"]"#)
         .context("wait for nav-profile")?
         .click()
@@ -42,7 +44,7 @@ pub fn navigate_to_fav(session: &BrowserSession) -> Result<()> {
     Log::console("fav: tab".to_string());
     Log::dev("[fav] opening favorites tab".to_string());
     session
-        .tab()
+        .tab()?
         .wait_for_xpath(r#"//span[text()="Favorites"]/ancestor::p[@role="tab"]"#)
         .context("wait for Favorites tab")?
         .click()
@@ -480,7 +482,9 @@ pub fn launch_browser(url: &str, headless: bool) -> Result<BrowserSession> {
         OsStr::new("--no-sandbox"),
     ]);
     builder.ignore_default_args(vec![OsStr::new("--enable-automation")]);
-    let launch_opts = builder.build().expect("LaunchOptions");
+    let launch_opts = builder
+        .build()
+        .context("invalid browser launch options")?;
 
     let browser = Browser::new(launch_opts)
         .context("Failed to launch headless_chrome browser")?;
@@ -535,7 +539,7 @@ pub fn launch_browser(url: &str, headless: bool) -> Result<BrowserSession> {
 pub fn scroll_to_bottom(session: &BrowserSession) -> Result<()> {
     loop {
         let reached_end: bool = session
-            .tab()
+            .tab()?
             .evaluate(
                 r#"
                 (function() {
@@ -573,7 +577,7 @@ pub fn scroll_x_times(x: u32, session: &BrowserSession) -> Result<()> {
             return Ok(())
         }
         let reached_end: bool = session
-            .tab()
+            .tab()?
             .evaluate(
                 r#"
                 (function() {

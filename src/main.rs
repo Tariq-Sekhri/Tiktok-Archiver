@@ -67,7 +67,7 @@ pub static DEV_MODE : OnceLock<bool>=OnceLock::new();
 async fn main() {
     let mode = parse_args();
     Log::console(format!("Tiktok-Archiver 1.1.0 | Run Mode:{:?}", mode));
-    DEV_MODE.set(matches!(mode, RunMode::Dev)).expect("TODO: panic message");
+    let _ = DEV_MODE.set(matches!(mode, RunMode::Dev));
     check_state(&mode).await;
     match mode {
         RunMode::Login => login().await.unwrap_or_else(|e| {

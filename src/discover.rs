@@ -15,11 +15,11 @@ pub async fn first_discovery(username:String, session:&BrowserSession) -> Result
         "[discover] first_discovery @{}",
         username
     ));
-    session.tab().navigate_to(&format!("https://www.tiktok.com/@{}", &username))?;
+    session.tab()?.navigate_to(&format!("https://www.tiktok.com/@{}", &username))?;
     timeout(2, LogLevel::Console).await;
     let result = (|| {
         scroll_to_bottom(&session)?;
-        let html = session.tab().get_content().context("get_content")?;
+        let html = session.tab()?.get_content().context("get_content")?;
         let new_vids = videos_from_html(&html)?;
         Log::dev(format!(
             "[discover] first_discovery @{} anchor links={}",
@@ -29,9 +29,9 @@ pub async fn first_discovery(username:String, session:&BrowserSession) -> Result
 
         if new_vids.is_empty() {
             Log::error("No New Videos Reloading Page".to_string());
-            session.tab().reload(false, None)?;
+            session.tab()?.reload(false, None)?;
             scroll_to_bottom(&session)?;
-            let html = session.tab().get_content().context("get_content")?;
+            let html = session.tab()?.get_content().context("get_content")?;
             let new_vids = videos_from_html(&html)?;
             Log::dev(format!(
                 "[discover] first_discovery @{} anchor links={}",
@@ -82,16 +82,16 @@ pub async fn login() -> Result<()> {
     io::stdin().read_line(&mut asd)?;
 
     session
-        .tab()
+        .tab()?
         .navigate_to("https://www.tiktok.com")
         .context("navigate to tiktok.com before saving cookies")?;
     session
-        .tab()
+        .tab()?
         .wait_until_navigated()
         .context("timed out waiting for tiktok.com after login")?;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let cookies = cookie_to_param(session.tab().get_cookies().context("get_cookies")?);
+    let cookies = cookie_to_param(session.tab()?.get_cookies().context("get_cookies")?);
     if cookies.is_empty() {
         return Err(anyhow::anyhow!(
             "no tiktok cookies found in browser — finish logging in and try again"
@@ -117,9 +117,9 @@ pub fn fetch_newest_videos(account: &Account, session:&BrowserSession) -> Result
         url,
         2
     ));
-    session.tab().navigate_to(&url)?;
+    session.tab()?.navigate_to(&url)?;
     std::thread::sleep(Duration::from_secs(2));
-    let vids = videos_from_html(&session.tab().get_content().context("get_content")?)?;
+    let vids = videos_from_html(&session.tab()?.get_content().context("get_content")?)?;
     Log::dev(format!(
         "[discover] fetch_newest_videos @{} parsed {} anchor links",
         account.name,
@@ -153,7 +153,7 @@ pub fn fav(session: &BrowserSession, seen: &mut HashMap<String, Vec<Video>> ) ->
     let mut pass = 0u32;
     loop {
         pass += 1;
-        let html = session.tab().get_content().context("get_content")?;
+        let html = session.tab()?.get_content().context("get_content")?;
         let new_fav_vids: Vec<Video> = videos_from_html(&html)?.into_iter()
             .filter(|vid| !existing_fav_ids.contains(&vid.id)).collect();
         Log::dev(format!("[fav] pass {}: found {} videos on page", pass, new_fav_vids.len()));
@@ -299,8 +299,8 @@ pub async fn get_new_count(session: &BrowserSession, username: &str) -> Result<i
     if let Ok(n) = fetch_count_http(username).await {
         return Ok(n);
     }
-    session.tab().navigate_to(&format!("https://www.tiktok.com/@{}", &username))?;
-    let html = session.tab().get_content()?;
+    session.tab()?.navigate_to(&format!("https://www.tiktok.com/@{}", &username))?;
+    let html = session.tab()?.get_content()?;
     video_count_from_html(&html)
 }
 

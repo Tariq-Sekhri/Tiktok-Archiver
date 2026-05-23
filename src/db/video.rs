@@ -42,9 +42,12 @@ pub fn deserialize_download_date<'de, D>(    d: D,) -> std::result::Result<Optio
         Some(s) => {
             if s.len() == 10 {
                 NaiveDate::parse_from_str(&s, "%Y-%m-%d")
-                    .map(|d| d.and_hms_opt(0, 0, 0).unwrap())
-                    .map(Some)
                     .map_err(serde::de::Error::custom)
+                    .and_then(|d| {
+                        d.and_hms_opt(0, 0, 0)
+                            .map(Some)
+                            .ok_or_else(|| serde::de::Error::custom("invalid date"))
+                    })
             } else if s.contains('T') {
                 NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S")
                     .map(Some)

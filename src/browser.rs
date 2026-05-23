@@ -8,25 +8,22 @@ use headless_chrome::{browser, Browser};
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::path::{ PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 use crate::DEV_MODE;
 
 pub const TIKTOK_ORIGIN: &str = "https://www.tiktok.com";
 
 const SESSION_COOKIE_NAMES: &[&str] = &["sid_tt", "sessionid", "sid_guard", "uid_tt", "tt_session_tlb_tag"];
 
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 
 
 
 pub struct BrowserSession {
     tab: Option<Arc<headless_chrome::Tab>>,
+    #[allow(unused)]
     browser: Option<Browser>,
 }
 
@@ -501,7 +498,6 @@ pub fn launch_browser(url: &str, headless: bool) -> Result<BrowserSession> {
 
     let browser = Browser::new(launch_opts)
         .context("Failed to launch headless_chrome browser")?;
-    let chrome_pid = browser.get_process_id();
     let tab = browser
         .new_tab()
         .context("Failed to open new browser tab for TikTok session")?;

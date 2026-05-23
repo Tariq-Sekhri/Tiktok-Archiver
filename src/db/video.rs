@@ -1,4 +1,4 @@
-//v0
+//v1
 
 use std::{
 
@@ -14,14 +14,12 @@ use std::{
 
 use anyhow::{Context, Result};
 
-use chrono::{Local, NaiveDate, NaiveDateTime};
+use chrono::{NaiveDate, NaiveDateTime};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-
-
-use crate::db::logger::dev_mode_enabled;
 use crate::db::{atomic_write_text, ensure_file, state_dir};
+use crate::db::config::load_config;
+
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy)]
 pub enum DownloadStatus {
     Downloaded,
@@ -58,11 +56,14 @@ pub fn deserialize_download_date<'de, D>(    d: D,) -> std::result::Result<Optio
         }
     }
 }
+pub const VIDEO_EXT: &str = "mp4";
+
+
 //v0
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Video {
     pub url: String,
-    pub video_id: i64,
+    pub id: i64,
     pub username: String,
     #[serde(default)]
     pub is_fav: bool,
@@ -79,7 +80,7 @@ impl Video {
     pub fn new(url: String, video_id: i64, username: String) -> Self {
         Self {
             url,
-            video_id,
+            id: video_id,
             username,
             is_fav: false,
             download_status: DownloadStatus::NotDownloaded,
@@ -89,7 +90,30 @@ impl Video {
         }
 
     }
+    pub fn is_pending(&self)->bool{
+        matches!(self.download_status, DownloadStatus::NotDownloaded | DownloadStatus::DownloadFailed) && self.source_available
 
+    }
+
+    pub fn file_path(&self)->Result<PathBuf>{
+
+        let folder = if self.is_fav {
+            &self.username
+        } else {
+            "favs"
+        };
+
+        Ok(PathBuf::from(load_config()?.download_dir).join(folder).join(format!("{}.{}", self.id, VIDEO_EXT )))
+    }
+    pub fn other_file_path(&self)->Result<PathBuf>{
+        let folder = if !self.is_fav {
+            &self.username
+        } else {
+            "favs"
+        };
+
+        Ok(PathBuf::from(load_config()?.download_dir).join(folder).join(format!("{}.{}", self.id, VIDEO_EXT )))
+    }
 }
 
 
@@ -129,57 +153,13 @@ pub fn bucket_count(map: &HashMap<String, Vec<Video>>, username: &str) -> usize 
 //v0
 pub fn append_videos(map: &mut HashMap<String, Vec<Video>>,username: &str,vids:&[Video]) -> usize {
     let user_vids = map.entry(username.to_string()).or_default();
-    let mut existing_ids: HashSet<i64> = user_vids.iter().map(|v| v.video_id).collect();
+    let mut existing_ids: HashSet<i64> = user_vids.iter().map(|v| v.id).collect();
     let mut added = 0;
     for vid in vids {
-        if existing_ids.insert(vid.video_id) {
+        if existing_ids.insert(vid.id) {
             user_vids.push(vid.clone());
             added += 1;
         }
     }
     added
 }
-
-//v0
-pub fn update_download_status( map: &mut HashMap<String, Vec<Video>>, username: &str, video_id: i64, status: DownloadStatus) -> bool {
-    let Some(vids) = map.get_mut(username) else { return false;};
-    let Some(v) = vids.iter_mut().find(|v| v.video_id == video_id) else {return false;};
-    v.download_status = status;
-    match status {
-        DownloadStatus::Downloaded => {
-            v.download_date = Some(Local::now().naive_local());
-        }
-        DownloadStatus::NotDownloaded => {
-            v.download_date = None;
-        }
-        DownloadStatus::DownloadFailed => {}
-    }
-    true
-}
-
-//v0
-pub fn update_source_available(seen_vids: &mut HashMap<String, Vec<Video>>, username: &str, video_id: i64, source_available: bool) -> bool {
-    let Some(vids) = seen_vids.get_mut(username) else { return false; };
-    let Some(v) = vids.iter_mut().find(|v| v.video_id == video_id) else { return false; };
-    v.source_available = source_available;
-    true
-}
-//v0
-pub fn pending_videos(seen_vids: &HashMap<String, Vec<Video>>) -> Vec<Video> {
-    seen_vids.iter()
-        .flat_map(|(bucket, videos)| {
-            videos.iter().filter_map(move |vid| {
-                if vid.source_available && (vid.download_status == DownloadStatus::NotDownloaded
-                        || vid.download_status == DownloadStatus::DownloadFailed) {
-                    let mut out = vid.clone();
-                    if bucket == "favorite" {
-                        out.is_fav = true;
-                    }
-                    Some(out)
-                } else {
-                    None
-                }
-            })}).collect()
-}
-
-

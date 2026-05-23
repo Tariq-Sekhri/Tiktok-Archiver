@@ -12,7 +12,7 @@ use std::process::Command;
 use std::os::windows::process::CommandExt;
 use std::sync::OnceLock;
 use crate::{print_how_to_use_and_exit, RunMode};
-use crate::browser::{cookies_have_any, log_auth_storage_status};
+use crate::browser::{cookies_have_any, is_headless, launch_browser, log_auth_storage_status, TIKTOK_ORIGIN};
 use crate::db::config::{account_name, is_tracked, load_config, save_config, Config};
 use crate::db::account::{account_file, add_account, load_accounts, update_account_state};
 use crate::db::logger::Log;
@@ -161,11 +161,11 @@ async fn config_and_accounts_sync(config: &mut Config) {
             "[sync] Pre-Reconciling accounts: config_all_names={:?}, state_names={:?}, config_only_tracked={:?}, state_only={:?}",
             config_all_names, state_names, config_only_tracked, state_only
         ));
-
+        let session = launch_browser(TIKTOK_ORIGIN, is_headless()).unwrap();
         for name in config_only_tracked {
             Log::console(format!("sync {}", name));
             Log::dev(format!("[sync] first_discovery start for @{}", name));
-            match first_discovery(name.clone()).await {
+            match first_discovery(name.clone(), &session).await {
                 Ok((acc,vids))=>{
                     Log::dev(format!(
                         "[sync] first_discovery success for @{}: count={}, diff={}, unavailable={}, vids={}",

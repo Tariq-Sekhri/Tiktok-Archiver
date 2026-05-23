@@ -8,7 +8,7 @@ mod core;
 use crate::db::check_state;
 use crate::db::logger::{Log};
 use crate::discover::login;
-use std::{env, io::Write, process};
+use std::{env, process};
 use std::sync::OnceLock;
 
 use crate::core::default_loop;

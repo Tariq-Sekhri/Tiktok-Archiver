@@ -1,25 +1,10 @@
 //v0
-use crate::db::logger::{Log};
-use crate::db::{atomic_write_text, ensure_file, state_dir};
-use anyhow::{anyhow, Context};
-use anyhow::Result;
-use headless_chrome::protocol::cdp::Network::{Cookie, CookieParam, CookieSameSite, SetCookies};
-use headless_chrome::{browser, Browser};
-use std::collections::HashSet;
-use std::ffi::OsStr;
-use std::fs;
-use std::path::{ PathBuf};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-use crate::DEV_MODE;
-
-pub const TIKTOK_ORIGIN: &str = "https://www.tiktok.com";
+use anyhow::{anyhow, Context, Result};
+use headless_chrome::{browser, Browser, protocol::cdp::Network::{Cookie, CookieParam, CookieSameSite, SetCookies}};
+use std::{collections::HashSet, ffi::OsStr, fs, path::PathBuf, sync::Arc, time::{Duration, Instant}};
+use crate::{db::{atomic_write_text, ensure_file, logger::Log, state_dir}, DEV_MODE};
 
 const SESSION_COOKIE_NAMES: &[&str] = &["sid_tt", "sessionid", "sid_guard", "uid_tt", "tt_session_tlb_tag"];
-
-
-
-
 
 pub struct BrowserSession {
     tab: Option<Arc<headless_chrome::Tab>>,
@@ -32,11 +17,12 @@ impl BrowserSession {
         self.tab.as_ref().expect("browser session closed")
     }
 }
+//v1
 pub fn is_headless()->bool{
     if cfg!(debug_assertions) || *DEV_MODE.get().expect("TODO: eror message"){
-        true
-    }else{
         false
+    }else{
+        true
     }
 
 }

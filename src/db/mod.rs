@@ -12,7 +12,7 @@ use std::process::Command;
 use std::os::windows::process::CommandExt;
 use std::sync::OnceLock;
 use crate::{print_how_to_use_and_exit, RunMode};
-use crate::browser::{cookies_have_any, is_headless, launch_browser, log_auth_storage_status, TIKTOK_ORIGIN};
+use crate::browser::{cookies_have_any, is_headless, launch_browser, log_auth_storage_status};
 use crate::db::config::{account_name, is_tracked, load_config, save_config, Config};
 use crate::db::account::{account_file, add_account, load_accounts, update_account_state};
 use crate::db::logger::Log;
@@ -36,7 +36,7 @@ fn ensure_state_dir(state_dir: &Path) {
         ));
     }
 }
-//v0
+//v1
 pub fn state_dir() -> PathBuf {
     if cfg!(debug_assertions) {
         let manifest_state = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("state");
@@ -49,7 +49,7 @@ pub fn state_dir() -> PathBuf {
     exe_state
 }
 
-//v0
+//v1
 pub fn ensure_file(path: &PathBuf, default_contents: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -64,7 +64,7 @@ pub fn ensure_file(path: &PathBuf, default_contents: &str) -> Result<()> {
     Ok(())
 }
 
-//v0
+//v1
 pub fn atomic_write_text(path: &Path, contents: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -88,11 +88,9 @@ pub fn atomic_write_text(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
-//v0
+//v1
 pub async fn check_state(mode: &RunMode) {
     let (cookies_path, mut config) = general_check();
-    Log::dev("init ok".to_string());
-
     match mode {
         RunMode::Login => {
             log_auth_storage_status();
@@ -161,7 +159,8 @@ async fn config_and_accounts_sync(config: &mut Config) {
             "[sync] Pre-Reconciling accounts: config_all_names={:?}, state_names={:?}, config_only_tracked={:?}, state_only={:?}",
             config_all_names, state_names, config_only_tracked, state_only
         ));
-        let session = launch_browser(TIKTOK_ORIGIN, is_headless()).unwrap();
+        Log::dev(format!("headless:{}", is_headless()) );
+        let session = launch_browser("https://www.tiktok.com/", is_headless()).unwrap();
         for name in config_only_tracked {
             Log::console(format!("sync {}", name));
             Log::dev(format!("[sync] first_discovery start for @{}", name));

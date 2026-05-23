@@ -1,34 +1,13 @@
-//v0
+//v1
 
 use anyhow::{anyhow, Context, Result};
 use regex::Regex;
 use serde_json::Value;
 use std::{collections::{HashMap, HashSet}, io, time::{Duration, Instant}};
-use crate::{browser::{clear_tiktok_profile, cookie_params_have_session, cookie_to_param, launch_browser, load_cookie_params, save_cookies, scroll_to_bottom, scroll_x_times, BrowserSession, TIKTOK_ORIGIN}, db::{account::Account, logger::Log, video::Video}};
-
-
-
-const VIDEO_COUNT_JS: &str = r#"
-(function() {
-  const el = document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__');
-  if (el && el.textContent) {
-    try {
-      const data = JSON.parse(el.textContent);
-      const detail = data && data['__DEFAULT_SCOPE__'] && data['__DEFAULT_SCOPE__']['webapp.user-detail'];
-      if (detail && detail.userInfo && detail.userInfo.stats) {
-        const n = detail.userInfo.stats.videoCount;
-        if (typeof n === 'number') return n;
-      }
-    } catch (e) {}
-  }
-  const html = document.documentElement && document.documentElement.innerHTML;
-  if (html) {
-    const m = html.match(/"videoCount"\s*:\s*(\d+)/);
-    if (m) return parseInt(m[1], 10);
-  }
-  return null;
-})()
-"#;
+use crate::{browser::{clear_tiktok_profile, cookie_params_have_session, cookie_to_param, launch_browser, load_cookie_params, save_cookies, scroll_to_bottom, scroll_x_times, BrowserSession}, db::{account::Account, logger::Log, video::Video}};
+use crate::browser::navigate_to_fav;
+use crate::core::timeout;
+use crate::db::logger::LogLevel;
 
 //v1
 pub async fn first_discovery(username:String, session:&BrowserSession) -> Result<(Account, Vec<Video>)> {
@@ -37,6 +16,7 @@ pub async fn first_discovery(username:String, session:&BrowserSession) -> Result
         username
     ));
     session.tab().navigate_to(&format!("https://www.tiktok.com/@{}", &username))?;
+    timeout(2, LogLevel::Console).await;
     let result = (|| {
         scroll_to_bottom(&session)?;
         let html = session.tab().get_content().context("get_content")?;
@@ -65,7 +45,7 @@ pub async fn first_discovery(username:String, session:&BrowserSession) -> Result
     result
 }
 
-//v0 cookies
+//v1
 pub async fn login() -> Result<()> {
     let cookies = load_cookie_params()?;
     if !cookies.is_empty() {
@@ -88,7 +68,7 @@ pub async fn login() -> Result<()> {
 
     session
         .tab()
-        .navigate_to(TIKTOK_ORIGIN)
+        .navigate_to("https://www.tiktok.com")
         .context("navigate to tiktok.com before saving cookies")?;
     session
         .tab()
@@ -147,11 +127,10 @@ pub fn scrolls_per_pass(pass: u32) -> u32 {
         }
     }
 }
-//v0
-pub fn fav_with_seen(session: &BrowserSession, seen: &mut HashMap<String, Vec<Video>> ) -> Result<bool> {
-    let fav_cycle_t0 = Instant::now();
-    let mut seen_dirty = false;
-    let mut done_ids: HashSet<i64> = HashSet::new();
+//v1
+pub fn fav(session: &BrowserSession, seen: &mut HashMap<String, Vec<Video>> ) -> Result<bool> {
+    navigate_to_fav(&session)?;
+    let mut have_new_vids = false;
     let mut existing_fav_ids: HashSet<i64> = seen
         .get("favorite")
         .map(|v| v.iter().map(|x| x.id).collect())
@@ -159,73 +138,40 @@ pub fn fav_with_seen(session: &BrowserSession, seen: &mut HashMap<String, Vec<Vi
     let mut pass = 0u32;
     loop {
         pass += 1;
-        Log::console(format!("fav pass {}", pass));
-        Log::dev(format!("[fav] pass {}: reading page", pass));
-        let read_t0 = Instant::now();
         let html = session.tab().get_content().context("get_content")?;
-        let fav_vids: Vec<Video> = videos_from_html(&html)?
-            .into_iter()
-            .filter(|vid| !done_ids.contains(&vid.id))
-            .collect();
-        Log::dev_timing("fav_pass_read", read_t0);
-        Log::console(format!("fav pass {} links {}", pass, fav_vids.len()));
-        Log::dev(format!(
-            "[fav] pass {}: found {} videos on page",
-            pass,
-            fav_vids.len()
-        ));
-
+        let new_fav_vids: Vec<Video> = videos_from_html(&html)?.into_iter()
+            .filter(|vid| !existing_fav_ids.contains(&vid.id)).collect();
+        Log::dev(format!("[fav] pass {}: found {} videos on page", pass, new_fav_vids.len()));
         let mut new_count = 0u32;
-        let mut batch_new: Vec<Video> = Vec::new();
-        for fav in &fav_vids {
-            done_ids.insert(fav.id);
-
+        for fav in &new_fav_vids {
             if existing_fav_ids.contains(&fav.id) {
                 continue;
             }
-
             new_count += 1;
             let mut fav_video = fav.clone();
             fav_video.is_fav = true;
 
-
-            batch_new.push(fav_video);
             existing_fav_ids.insert(fav.id);
-        }
 
-        if !batch_new.is_empty() {
             let favorite_videos = seen.entry("favorite".to_string()).or_default();
-            for v in batch_new {
-                favorite_videos.push(v);
-            }
-            seen_dirty = true;
+                favorite_videos.push(fav.to_owned());
+            have_new_vids = true;
         }
 
-        if new_count > 0 {
-            Log::console(format!("fav pass {} new {}", pass, new_count));
-        }
-        Log::dev(format!(
-            "[fav] pass {}: processed new={}",
-            pass, new_count
-        ));
 
         if new_count == 0 {
-            Log::console(format!("fav done {}", pass));
             Log::dev(format!("[fav] pass {}: no new items, done", pass));
             break;
         }
 
-        let budget = scrolls_per_pass(pass);
-        Log::console(format!("fav pass {} scroll {}", pass, budget));
-        Log::dev(format!("[fav] pass {}: scroll_x_times {}", pass, budget));
+        let scroll_amount = scrolls_per_pass(pass);
+        Log::dev(format!("[fav] pass {}: scroll: {}", pass, scroll_amount));
         let scroll_t0 = Instant::now();
-        scroll_x_times(budget, session)?;
+        scroll_x_times(scroll_amount, session)?;
         Log::dev_timing("fav_pass_scroll", scroll_t0);
     }
-
     Log::dev(format!("[fav] finished after {} passes", pass));
-    Log::dev_timing("fav_cycle", fav_cycle_t0);
-    Ok(seen_dirty)
+    Ok(have_new_vids)
 }
 
 
@@ -261,7 +207,7 @@ pub fn videos_from_html(html: &str) -> Result<Vec<Video>> {
 }
 
 
-//v0
+//v1
 fn parse_rehydration(html: &str) -> Option<Value> {
     let re = Regex::new(
         r#"(?s)<script[^>]*id=["']__UNIVERSAL_DATA_FOR_REHYDRATION__["'][^>]*>([^<]+)</script>"#,
@@ -308,7 +254,7 @@ fn fetch_count_http(username: &str) -> Result<i64> {
         .map(|p| format!("{}={}", p.name, p.value))
         .collect::<Vec<_>>()
         .join("; ");
-    let client = reqwest::blocking::Client::builder()
+    let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::limited(5))
         .build()
         .context("http client")?;
@@ -333,7 +279,7 @@ fn fetch_count_http(username: &str) -> Result<i64> {
 }
 
 //v1
-pub fn get_new_count(session: &BrowserSession, username: &str) -> Result<i64> {
+async pub fn get_new_count(session: &BrowserSession, username: &str) -> Result<i64> {
     if let Ok(n) = fetch_count_http(username) {
         return Ok(n);
     }

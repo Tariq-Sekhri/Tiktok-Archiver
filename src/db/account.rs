@@ -1,4 +1,4 @@
-//v0
+//v1
 use std::fs;
 use serde::{Deserialize, Serialize};
 use crate::db::{atomic_write_text, ensure_file, state_dir};
@@ -53,7 +53,7 @@ pub fn load_accounts() -> Result<Vec<Account>> {
     let file = fs::File::open(&path)?;
     Ok(serde_json::from_reader(&file)?)
 }
-//v0
+//v1
 fn save_accounts(accounts:&Vec<Account>) ->Result<()>{
     let file = account_file()?;
     let json = serde_json::to_string_pretty(&accounts)?;
@@ -70,7 +70,7 @@ pub fn add_account(account:&Account)->Result<()>{
     accounts.push(account.clone());
     save_accounts(&accounts)
 }
-//v0
+//v1
 pub fn update_account_state(account: &Account, count: i64, diff: i64, unavailable: i64) -> Result<()> {
     let mut accounts = load_accounts()?;
     accounts.iter_mut().for_each(|acc| {
@@ -83,7 +83,7 @@ pub fn update_account_state(account: &Account, count: i64, diff: i64, unavailabl
     save_accounts(&accounts)?;
     Ok(())
 }
-//v0
+//v1
 pub fn load_tracked_accounts() -> Result<Vec<Account>> {
     let accounts = load_accounts()?;
     let tracked_names:Vec<String> = load_config()?

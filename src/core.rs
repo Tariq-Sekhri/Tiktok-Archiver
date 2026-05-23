@@ -1,13 +1,13 @@
-//v0
+//v1
 
 use std::{collections::HashSet, io::{self, IsTerminal, Write}, time::{Duration, Instant}};
 use tokio::time::sleep;
-use crate::{browser::{is_headless, launch_browser, navigate_to_fav}, db::{account::{load_tracked_accounts, update_account_state, Account, CountEvent}, config::{load_config, Config}, logger::{Log, LogLevel}, video::{append_videos, bucket_count, load_all, save_all, Video}}, discover::{fav_with_seen, fetch_newest_videos}, download::download_pending};
+use crate::{browser::{is_headless, launch_browser}, db::{account::{load_tracked_accounts, update_account_state, Account, CountEvent}, config::{load_config, Config}, logger::{Log, LogLevel}, video::{append_videos, bucket_count, load_all, save_all, Video}}, discover::{fav, fetch_newest_videos}, download::download_pending};
 use crate::discover::get_new_count;
 use anyhow::Result;
 
 //v1
-async fn timeout(wait_secs: u8, level: LogLevel) {
+pub async fn timeout(wait_secs: u8, level: LogLevel) {
     if !io::stdout().is_terminal() || level == LogLevel::Dev {
         sleep(Duration::from_secs(wait_secs as u64)).await;
         return;
@@ -24,9 +24,10 @@ async fn timeout(wait_secs: u8, level: LogLevel) {
 //v1
 async fn run_poll_fav_cycle(accounts: Vec<Account>,config:Config) -> Result<()> {
     let mut seen_vids = load_all()?;
-
-    let session = launch_browser("https://www.tiktok.com", is_headless())?;
-    let mut new_vids = false;
+    let headless= is_headless();
+    Log::dev(format!("headless:{}", headless) );
+    let session = launch_browser("https://www.tiktok.com", headless)?;
+    let mut have_new_vids = false;
 
     let count_results:Vec<Result<i64>> = accounts.iter().map(|account| get_new_count(&session, &account.name)).collect();
 
@@ -98,37 +99,27 @@ async fn run_poll_fav_cycle(accounts: Vec<Account>,config:Config) -> Result<()> 
                 new_videos.len()
             ));
             append_videos(&mut seen_vids, &account.name, &new_videos);
-            new_vids = true;
+            have_new_vids = true;
         }
 
         let total_seen = bucket_count(&seen_vids, &account.name);
         reconcile_account_state(&account, new_count, unavailable, total_seen);
     }
-
     if config.download_fav {
-        Log::console("fav start".to_string());
-        let fav_t0 = Instant::now();
-        match navigate_to_fav(&session) {
-            Ok(()) => match fav_with_seen(&session, &mut seen_vids) {
-                Ok(fav_dirty) => {
-                    if fav_dirty {
-                        new_vids = true;
-                    }
+            match fav(&session, &mut seen_vids) {
+            Ok(fav_dirty) => {
+                if fav_dirty {
+                    have_new_vids = true;
                 }
-                Err(e) => Log::error(format!("Fav Error: {}", e)),
-            },
-            Err(e) => Log::error(format!("Fav open Error: {}", e)),
+            }
+            Err(e) => Log::error(format!("Fav Error: {}", e)),
         }
-        Log::dev_timing("fav_total", fav_t0);
     }
 
-
-
-    if new_vids {
+    if have_new_vids {
         download_pending(&mut seen_vids)?;
         save_all(&seen_vids)?;
     }
-
     Ok(())
 }
 
@@ -160,29 +151,12 @@ pub async fn default_loop() {
         timeout(60, LogLevel::Console).await;
     }
 }
-//v0
+//v1
 fn reconcile_account_state(account: &Account, new_count: i64, unavailable: i64, total_seen: usize) {
     let total_seen_videos_count = total_seen as i64;
-    Log::dev(format!(
-        "@{} reconcile enter: new_count={} unavailable_in={} stored_count={} stored_diff={} stored_unavailable={}",
-        account.name,
-        new_count,
-        unavailable,
-        account.count,
-        account.diff,
-        account.unavailable
-    ));
+    Log::dev(format!("@{} reconcile enter: new_count={} unavailable_in={} stored_count={} stored_diff={} stored_unavailable={}", account.name, new_count, unavailable,        account.count,        account.diff,        account.unavailable));
     let diff = new_count + unavailable - total_seen_videos_count;
-    Log::dev(format!(
-        "@{} reconcile: total_seen={} diff={} (formula: {} + {} - {} = {})",
-        account.name,
-        total_seen_videos_count,
-        diff,
-        new_count,
-        unavailable,
-        total_seen_videos_count,
-        diff
-    ));
+    Log::dev(format!("@{} reconcile: total_seen={} diff={} (formula: {} + {} - {} = {})", account.name,        total_seen_videos_count,diff,new_count,        unavailable, total_seen_videos_count, diff));
 
     if diff < 0 {
         let msg = format!(

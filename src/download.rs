@@ -7,12 +7,14 @@ use crate::browser::{load_cookie_params, write_ytdlp_cookie_jar};
 use crate::db::{ logger::Log, resolve_executable_path, video::{Video}};
 use crate::db::video::DownloadStatus::{DownloadFailed, Downloaded};
 //v1
-fn download_videos(vids:Vec<&mut Video>, ) -> Result<()> {
-    for vid in vids{
+fn download_videos(mut vids:Vec<&mut Video>, ) -> Result<()> {
+    let len = vids.len();
+    for (index, vid) in vids.iter_mut().enumerate(){
        match download_video(vid){
             Ok(()) => {
                 vid.download_status = Downloaded;
-                vid.download_date = Some(chrono::Utc::now().naive_utc());
+                vid.download_date = Some(chrono::Local::now().naive_local());
+                Log::dev(format!("{}/{}",index, len));
 
             }
             Err(e) => {
@@ -38,10 +40,10 @@ pub fn download_pending(seen_vids: &mut HashMap<String, Vec<Video>>) -> Result<(
 //v1
 pub fn download_video(vid: &Video) -> Result<()> {
     let file_path = vid.file_path()?;
+    Log::dev(format!("is_fav: {} Path: {:?}", vid.is_fav,file_path));
     if file_path.exists(){
         Log::console(format!("Video:{} Already Downloaded",vid.id));
         return Ok(())
-
     }
     if !vid.file_path()?.exists() && vid.other_file_path()?.exists(){
         Log::console(format!("hard link created for {}", vid.id));
@@ -49,15 +51,14 @@ pub fn download_video(vid: &Video) -> Result<()> {
         return Ok(())
 
     }
-    let path = vid.file_path()?;
-    if let Some(parent) = path.parent() {
+    if let Some(parent) = file_path.parent() {
         fs::create_dir_all(parent)?;
     }
     let cookie_params = load_cookie_params()?;
     let ytdlp_path = resolve_executable_path("yt-dlp.exe");
     let mut cmd = Command::new(&ytdlp_path);
     cmd.arg("-o")
-        .arg(path.to_str().unwrap_or(""))
+        .arg(file_path.to_str().unwrap_or(""))
         .arg("--merge-output-format")
         .arg("mp4")
         .arg("--no-warnings");
@@ -82,3 +83,4 @@ pub fn download_video(vid: &Video) -> Result<()> {
         Err(anyhow!(format!("yt-dlp: {}", stderr.trim())))
     }
 }
+

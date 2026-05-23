@@ -28,8 +28,23 @@ pub async fn first_discovery(username:String, session:&BrowserSession) -> Result
         ));
 
         if new_vids.is_empty() {
-            return Err(anyhow::anyhow!("No new video"));
+            Log::error("No New Videos Reloading Page".to_string());
+            session.tab().reload(false, None)?;
+            scroll_to_bottom(&session)?;
+            let html = session.tab().get_content().context("get_content")?;
+            let new_vids = videos_from_html(&html)?;
+            Log::dev(format!(
+                "[discover] first_discovery @{} anchor links={}",
+                username,
+                new_vids.len()
+            ));
+            //todo click refresh video
+            if new_vids.is_empty() {
+
+                return Err(anyhow::anyhow!("No new video"));
+            }
         }
+
 
         let count = video_count_from_html(&html)?;
         let diff = count - new_vids.len() as i64;
@@ -154,7 +169,7 @@ pub fn fav(session: &BrowserSession, seen: &mut HashMap<String, Vec<Video>> ) ->
             existing_fav_ids.insert(fav.id);
 
             let favorite_videos = seen.entry("favorite".to_string()).or_default();
-                favorite_videos.push(fav.to_owned());
+                favorite_videos.push(fav_video.to_owned());
             have_new_vids = true;
         }
 

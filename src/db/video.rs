@@ -96,20 +96,19 @@ impl Video {
     }
 
     pub fn file_path(&self)->Result<PathBuf>{
-
         let folder = if self.is_fav {
-            &self.username
-        } else {
             "favs"
+        } else {
+            &self.username
         };
 
         Ok(PathBuf::from(load_config()?.download_dir).join(folder).join(format!("{}.{}", self.id, VIDEO_EXT )))
     }
     pub fn other_file_path(&self)->Result<PathBuf>{
-        let folder = if !self.is_fav {
-            &self.username
-        } else {
+        let folder = if self.is_fav {
             "favs"
+        } else {
+            &self.username
         };
 
         Ok(PathBuf::from(load_config()?.download_dir).join(folder).join(format!("{}.{}", self.id, VIDEO_EXT )))

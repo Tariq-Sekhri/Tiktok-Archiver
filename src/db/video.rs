@@ -19,12 +19,13 @@ use chrono::{NaiveDate, NaiveDateTime};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::db::{atomic_write_text, ensure_file, state_dir};
 use crate::db::config::load_config;
+use crate::db::logger::Log;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy)]
 pub enum DownloadStatus {
     Downloaded,
     NotDownloaded,
-    DownloadFailed,
+    DownloadFailed(u8),
 }
 //v0
 pub fn serialize_download_date<S>(opt: &Option<NaiveDateTime>, s: S, ) -> std::result::Result<S::Ok, S::Error> where S: Serializer,{
@@ -91,7 +92,11 @@ impl Video {
 
     }
     pub fn is_pending(&self)->bool{
-        matches!(self.download_status, DownloadStatus::NotDownloaded | DownloadStatus::DownloadFailed) && self.source_available
+        match self.download_status{
+            DownloadStatus::Downloaded => {false}
+            DownloadStatus::NotDownloaded => {true}
+            DownloadStatus::DownloadFailed(failed_count) => {failed_count> 5}
+        }
 
     }
 
@@ -112,6 +117,14 @@ impl Video {
         };
 
         Ok(PathBuf::from(load_config()?.download_dir).join(folder).join(format!("{}.{}", self.id, VIDEO_EXT )))
+    }
+
+    pub fn download_failed(&mut self){
+        self.download_status = match self.download_status{
+            DownloadStatus::Downloaded => {Log::critical_fail("download failed on a video already download??".to_string()) }
+            DownloadStatus::NotDownloaded => {DownloadStatus::DownloadFailed(1)}
+            DownloadStatus::DownloadFailed(n) => {DownloadStatus::DownloadFailed(n+1)}
+        }
     }
 }
 

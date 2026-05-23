@@ -49,13 +49,15 @@ impl Log {
         };
         log_helper(log);
     }
-    pub fn critical_fail(message: String) {
+    pub fn critical_fail(message: String)-> ! {
+        alert_critical_failure(&message);
         let log = Self {
             message,
             level: LogLevel::CriticalFail,
             timestamp: chrono::Local::now().naive_local(),
         };
         log_helper(log);
+        process::exit(1);
     }
     pub fn error(message: String) {
         let log = Self {
@@ -135,8 +137,4 @@ fn log_helper(log: Log) {
     if let Ok(serialized) = serde_json::to_string_pretty(&logs) {
         let _ = atomic_write_text(&path, &serialized);
     }
-    if log.level == LogLevel::CriticalFail {
-        alert_critical_failure(&log.message);
-        process::exit(1);
-    }
-}
+ }

@@ -5,7 +5,7 @@ use std::{collections::HashMap, fs, process::Command};
 use std::os::windows::process::CommandExt;
 use crate::browser::{load_cookie_params, write_ytdlp_cookie_jar};
 use crate::db::{ logger::Log, resolve_executable_path, video::{Video}};
-use crate::db::video::DownloadStatus::{DownloadFailed, Downloaded};
+use crate::db::video::DownloadStatus::{Downloaded};
 //v1
 fn download_videos(mut vids:Vec<&mut Video>, ) -> Result<()> {
     let len = vids.len();
@@ -18,7 +18,7 @@ fn download_videos(mut vids:Vec<&mut Video>, ) -> Result<()> {
 
             }
             Err(e) => {
-                vid.download_status = DownloadFailed;
+                vid.download_failed();
                 Log::error(format!("Download {} Failed:{}",vid.id, e ))
             }
         }

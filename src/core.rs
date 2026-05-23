@@ -29,7 +29,10 @@ async fn run_poll_fav_cycle(accounts: Vec<Account>,config:Config) -> Result<()> 
     let session = launch_browser("https://www.tiktok.com", headless)?;
     let mut have_new_vids = false;
 
-    let count_results:Vec<Result<i64>> = accounts.iter().map(|account| get_new_count(&session, &account.name)).collect();
+    let mut count_results: Vec<Result<i64>> = Vec::with_capacity(accounts.len());
+    for account in &accounts {
+        count_results.push(get_new_count(&session, &account.name).await);
+    }
 
     for (account, new_count) in accounts.into_iter().zip(count_results) {
         Log::dev(format!("@{} polling tiktok video count", account.name));
@@ -100,6 +103,8 @@ async fn run_poll_fav_cycle(accounts: Vec<Account>,config:Config) -> Result<()> 
             ));
             append_videos(&mut seen_vids, &account.name, &new_videos);
             have_new_vids = true;
+            save_all(&seen_vids)?;
+
         }
 
         let total_seen = bucket_count(&seen_vids, &account.name);
@@ -110,6 +115,8 @@ async fn run_poll_fav_cycle(accounts: Vec<Account>,config:Config) -> Result<()> 
             Ok(fav_dirty) => {
                 if fav_dirty {
                     have_new_vids = true;
+                    save_all(&seen_vids)?;
+
                 }
             }
             Err(e) => Log::error(format!("Fav Error: {}", e)),

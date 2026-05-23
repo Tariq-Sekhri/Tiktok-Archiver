@@ -13,6 +13,7 @@ fn download_videos(vids:Vec<&mut Video>, ) -> Result<()> {
             Ok(()) => {
                 vid.download_status = Downloaded;
                 vid.download_date = Some(chrono::Utc::now().naive_utc());
+
             }
             Err(e) => {
                 vid.download_status = DownloadFailed;
@@ -43,7 +44,7 @@ pub fn download_video(vid: &Video) -> Result<()> {
 
     }
     if !vid.file_path()?.exists() && vid.other_file_path()?.exists(){
-        Log::info(format!("hard link created for {}", vid.id));
+        Log::console(format!("hard link created for {}", vid.id));
         fs::hard_link( &vid.other_file_path()?, &vid.file_path()?)?;
         return Ok(())
 
@@ -73,7 +74,7 @@ pub fn download_video(vid: &Video) -> Result<()> {
         .map_err(|e| anyhow!(format!("Failed to execute yt-dlp: {}", e)))?;
 
     if output.status.success() {
-
+        Log::console(format!("Video: {} Downloaded", vid.id));
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);

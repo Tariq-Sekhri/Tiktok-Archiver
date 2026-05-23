@@ -243,7 +243,7 @@ pub fn video_count_from_html(html: &str) -> Result<i64> {
 
 
 //v1
-fn fetch_count_http(username: &str) -> Result<i64> {
+async fn fetch_count_http(username: &str) -> Result<i64> {
     let params = load_cookie_params()?;
     if params.is_empty() {
         return Err(anyhow!("no cookies for http count"));
@@ -264,11 +264,12 @@ fn fetch_count_http(username: &str) -> Result<i64> {
         .header("Cookie", cookie_header)
         .header("Accept-Language", "en-US,en;q=0.9")
         .send()
+        .await
         .context("http profile fetch")?;
     if !resp.status().is_success() {
         return Err(anyhow!("http status {}", resp.status()));
     }
-    let html = resp.text().context("http body")?;
+    let html = resp.text().await.context("http body")?;
     let count = video_count_from_html(&html)?;
     Log::dev(format!(
         "[api] get_new_count @{} videoCount={} (http)",
@@ -279,8 +280,8 @@ fn fetch_count_http(username: &str) -> Result<i64> {
 }
 
 //v1
-async pub fn get_new_count(session: &BrowserSession, username: &str) -> Result<i64> {
-    if let Ok(n) = fetch_count_http(username) {
+pub async fn get_new_count(session: &BrowserSession, username: &str) -> Result<i64> {
+    if let Ok(n) = fetch_count_http(username).await {
         return Ok(n);
     }
     session.tab().navigate_to(&format!("https://www.tiktok.com/@{}", &username))?;

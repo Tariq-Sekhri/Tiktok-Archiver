@@ -54,6 +54,30 @@ pub fn navigate_to_fav(session: &BrowserSession) -> Result<()> {
     Log::dev_timing("fav_open", t0);
     Ok(())
 }
+//v1
+pub fn click_refresh_if_present(session: &BrowserSession) -> Result<bool> {
+    let clicked = session
+        .tab()?
+        .evaluate(
+            r#"
+            (function() {
+                for (const btn of document.querySelectorAll('button')) {
+                    if (btn.textContent.trim() === 'Refresh') {
+                        btn.click();
+                        return true;
+                    }
+                }
+                return false;
+            })()
+            "#,
+            false,
+        )
+        .context("evaluate refresh button click")?
+        .value
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    Ok(clicked)
+}
 //v0
 pub fn cookies_path() -> Result<String> {
     let path = state_dir().join("saved_cookies.json");

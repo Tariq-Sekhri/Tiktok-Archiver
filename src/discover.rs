@@ -4,7 +4,7 @@ use anyhow::{anyhow, Context, Result};
 use regex::Regex;
 use serde_json::Value;
 use std::{collections::{HashMap, HashSet}, io, time::{Duration, Instant}};
-use crate::{browser::{clear_tiktok_profile, cookie_params_have_session, cookie_to_param, launch_browser, load_cookie_params, save_cookies, scroll_to_bottom, scroll_x_times, BrowserSession}, db::{account::Account, logger::Log, video::Video}};
+use crate::{browser::{clear_tiktok_profile, click_refresh_if_present, cookie_params_have_session, cookie_to_param, launch_browser, load_cookie_params, save_cookies, scroll_to_bottom, scroll_x_times, BrowserSession}, db::{account::Account, logger::Log, video::Video}};
 use crate::browser::navigate_to_fav;
 use crate::core::timeout;
 use crate::db::logger::LogLevel;
@@ -19,8 +19,8 @@ pub async fn first_discovery(username:String, session:&BrowserSession) -> Result
     timeout(2, LogLevel::Console).await;
     let result = (|| {
         scroll_to_bottom(&session)?;
-        let html = session.tab()?.get_content().context("get_content")?;
-        let new_vids = videos_from_html(&html)?;
+        let mut html = session.tab()?.get_content().context("get_content")?;
+        let mut new_vids = videos_from_html(&html)?;
         Log::dev(format!(
             "[discover] first_discovery @{} anchor links={}",
             username,
@@ -28,23 +28,50 @@ pub async fn first_discovery(username:String, session:&BrowserSession) -> Result
         ));
 
         if new_vids.is_empty() {
-            Log::error("No New Videos Reloading Page".to_string());
-            session.tab()?.reload(false, None)?;
-            scroll_to_bottom(&session)?;
-            let html = session.tab()?.get_content().context("get_content")?;
-            let new_vids = videos_from_html(&html)?;
-            Log::dev(format!(
-                "[discover] first_discovery @{} anchor links={}",
-                username,
-                new_vids.len()
-            ));
-            //todo click refresh video
-            if new_vids.is_empty() {
-
-                return Err(anyhow::anyhow!("No new video"));
+            if click_refresh_if_present(&session)? {
+                Log::dev(format!(
+                    "[discover] first_discovery @{} clicked Refresh before reload",
+                    username
+                ));
+                std::thread::sleep(Duration::from_secs(2));
+                scroll_to_bottom(&session)?;
+                html = session.tab()?.get_content().context("get_content")?;
+                new_vids = videos_from_html(&html)?;
+                Log::dev(format!(
+                    "[discover] first_discovery @{} anchor links after Refresh={}",
+                    username,
+                    new_vids.len()
+                ));
             }
         }
 
+        if new_vids.is_empty() {
+            Log::error("No New Videos Reloading Page".to_string());
+            session.tab()?.reload(false, None)?;
+            scroll_to_bottom(&session)?;
+            html = session.tab()?.get_content().context("get_content")?;
+            new_vids = videos_from_html(&html)?;
+            Log::dev(format!(
+                "[discover] first_discovery @{} anchor links after reload={}",
+                username,
+                new_vids.len()
+            ));
+            if new_vids.is_empty() {
+                if click_refresh_if_present(&session)? {
+                    Log::dev(format!(
+                        "[discover] first_discovery @{} clicked Refresh after reload",
+                        username
+                    ));
+                    std::thread::sleep(Duration::from_secs(2));
+                    scroll_to_bottom(&session)?;
+                    html = session.tab()?.get_content().context("get_content")?;
+                    new_vids = videos_from_html(&html)?;
+                }
+            }
+            if new_vids.is_empty() {
+                return Err(anyhow::anyhow!("No new video"));
+            }
+        }
 
         let count = video_count_from_html(&html)?;
         let diff = count - new_vids.len() as i64;

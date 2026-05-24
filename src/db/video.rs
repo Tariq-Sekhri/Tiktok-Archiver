@@ -1,21 +1,8 @@
 //v1
 
-use std::{
-
-    collections::{HashMap, HashSet},
-
-    fs,
-
-    path::PathBuf,
-
-};
-
-
-
+use std::{collections::{HashMap, HashSet}, fs, path::PathBuf, };
 use anyhow::{Context, Result, Error};
-
 use chrono::{NaiveDate, NaiveDateTime};
-
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::db::{atomic_write_text, ensure_file, state_dir};
 use crate::db::config::load_config;
@@ -63,6 +50,7 @@ pub fn deserialize_download_date<'de, D>(    d: D,) -> std::result::Result<Optio
 pub const VIDEO_EXT: &str = "mp4";
 
 
+
 //v0
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Video {
@@ -72,6 +60,7 @@ pub struct Video {
     #[serde(default)]
     pub is_fav: bool,
     pub download_status: DownloadStatus,
+    #[serde(default = "default_source_available")]
     pub source_available: bool,
     #[serde(
         serialize_with = "serialize_download_date",
@@ -79,6 +68,10 @@ pub struct Video {
     )]
     pub download_date: Option<NaiveDateTime>,
 }
+fn default_source_available() -> bool {
+    true
+}
+
 //v0
 impl Video {
     pub fn new(url: String, video_id: i64, username: String) -> Self {
@@ -94,13 +87,15 @@ impl Video {
         }
 
     }
-    pub fn is_pending(&self)->bool{
-        match self.download_status{
-            DownloadStatus::Downloaded => {false}
-            DownloadStatus::NotDownloaded => {true}
-            DownloadStatus::DownloadFailed(failed_count) => {failed_count> 5}
+    pub fn is_pending(&self) -> bool {
+        if !self.source_available {
+            return false;
         }
-
+        match self.download_status {
+            DownloadStatus::Downloaded => false,
+            DownloadStatus::NotDownloaded => true,
+            DownloadStatus::DownloadFailed(failed_count) => failed_count < 5,
+        }
     }
 
     pub fn file_path(&self)->Result<PathBuf>{
@@ -122,14 +117,18 @@ impl Video {
         Ok(PathBuf::from(load_config()?.download_dir).join(folder).join(format!("{}.{}", self.id, VIDEO_EXT )))
     }
 
-    pub fn download_failed(&mut self, e:&Error){
-        if e.to_string().contains("This post may not be comfortable for some audiences"){
-            self.source_available=false
-        }
-        self.download_status = match self.download_status{
-            DownloadStatus::Downloaded => {Log::critical_fail("download failed on a video already download??".to_string()) }
-            DownloadStatus::NotDownloaded => {DownloadStatus::DownloadFailed(1)}
-            DownloadStatus::DownloadFailed(n) => {DownloadStatus::DownloadFailed(n+1)}
+    pub fn download_failed(&mut self, _e: &Error) {
+        self.download_status = match self.download_status {
+            DownloadStatus::Downloaded => {
+                Log::critical_fail("download failed on a video already download??".to_string())
+            }
+            DownloadStatus::NotDownloaded => DownloadStatus::DownloadFailed(1),
+            DownloadStatus::DownloadFailed(n) => DownloadStatus::DownloadFailed(n + 1),
+        };
+        if let DownloadStatus::DownloadFailed(n) = self.download_status {
+            if n >= 5 {
+                self.source_available = false;
+            }
         }
     }
 }

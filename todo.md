@@ -1,3 +1,1 @@
-- source unavalble
-  - This post may not be comfortable for some audiences.
 - tests

@@ -160,6 +160,7 @@ async fn config_and_accounts_sync(config: &mut Config) {
             config_all_names, state_names, config_only_tracked, state_only
         ));
         Log::dev(format!("headless:{}", is_headless()) );
+        
         let session = match launch_browser("https://www.tiktok.com/", is_headless()) {
             Ok(s) => s,
             Err(e) => print_how_to_use_and_exit(&format!("Failed to launch browser for sync: {}", e)),

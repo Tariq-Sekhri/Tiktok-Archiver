@@ -12,7 +12,7 @@ use std::{
 
 
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, Error};
 
 use chrono::{NaiveDate, NaiveDateTime};
 
@@ -122,7 +122,10 @@ impl Video {
         Ok(PathBuf::from(load_config()?.download_dir).join(folder).join(format!("{}.{}", self.id, VIDEO_EXT )))
     }
 
-    pub fn download_failed(&mut self){
+    pub fn download_failed(&mut self, e:&Error){
+        if e.to_string().contains("This post may not be comfortable for some audiences"){
+            self.source_available=false
+        }
         self.download_status = match self.download_status{
             DownloadStatus::Downloaded => {Log::critical_fail("download failed on a video already download??".to_string()) }
             DownloadStatus::NotDownloaded => {DownloadStatus::DownloadFailed(1)}

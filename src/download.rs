@@ -14,11 +14,12 @@ fn download_videos(mut vids:Vec<&mut Video>, ) -> Result<()> {
             Ok(()) => {
                 vid.download_status = Downloaded;
                 vid.download_date = Some(chrono::Local::now().naive_local());
+                Log::info(format!("Download {} succeeded", vid.id));
                 Log::dev(format!("{}/{}",index, len));
 
             }
             Err(e) => {
-                vid.download_failed();
+                vid.download_failed(&e);
                 Log::error(format!("Download {} Failed:{}",vid.id, e ))
             }
         }

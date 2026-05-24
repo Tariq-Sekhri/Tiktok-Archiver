@@ -1,6 +1,6 @@
 ## Tiktok Archiver
 Minimal TikTok account watcher and downloader written in Rust.
-It watches configured TikTok accounts, keeps a JSON state of seen videos, and downloads missing videos using `yt-dlp`, while logging activity to a JSON log file.
+It watches configured TikTok accounts, keeps a JSON state of seen videos, and downloads missing videos using `yt-dlp`, while logging activity to level-specific log files under `state/`.
 
 **[Setup Guide Video](https://www.youtube.com/watch?v=3Ewcy7WfzaA)** — Watch this for a walkthrough of the installation and configuration process.
 
@@ -44,13 +44,15 @@ The app will:
 - Maintain derived state for each account in `state/accounts.json`
 
 ### State files
-All persistent JSON state lives under the `state` directory created in the project root:
+All persistent state lives under the `state` directory created in the project root:
 - `saved_cookies.json`: TikTok cookies captured during `cargo run login`
 - `accounts.json`: per‑account counts, diffs, and unavailable counts
 - `seen_videos.json`: per‑account list of discovered videos and download status
-- `log.json`: JSON log entries with timestamps and log levels
+- `info.log`: routine operational events
+- `error.log`: recoverable failures (poll, download, discovery)
+- `criticalfail.log`: unrecoverable failures that stop the process
 
 ### Troubleshooting
 - If you see messages about missing cookies or config, follow the printed instructions in the terminal and rerun `cargo run login` or fix `config.yaml`.
-- If `yt-dlp` fails, check the log messages in `state/log.json` and verify:
+- If `yt-dlp` fails, check `state/error.log` and verify:
   - Your cookies are still valid (repeat the login flow if needed)

@@ -1,19 +1,28 @@
 use std::cmp::PartialEq;
 use chrono::NaiveDateTime;
-use serde_json::{json, Value};
 use std::fmt;
 use std::fs;
+use std::io::Write;
+use std::path::PathBuf;
 use std::process;
 
 use crate::db::critical_alert::alert_critical_failure;
 use crate::db::{atomic_write_text, ensure_file, state_dir};
+use crate::DEV_MODE;
 
+const MAX_LOG_LINES: usize = 1000;
+
+pub fn dev_mode_enabled() -> bool {
+    *DEV_MODE.get().unwrap_or(&false)
+}
 
 #[derive(Clone, PartialEq)]
 pub enum LogLevel {
     CriticalFail,
     Error,
     Info,
+    Console,
+    Dev,
 }
 
 impl fmt::Display for LogLevel {
@@ -22,6 +31,8 @@ impl fmt::Display for LogLevel {
             LogLevel::CriticalFail => write!(f, "CriticalFail"),
             LogLevel::Error => write!(f, "Error"),
             LogLevel::Info => write!(f, "Info"),
+            LogLevel::Console => write!(f, "Console"),
+            LogLevel::Dev => write!(f, "Dev"),
         }
     }
 }
@@ -35,68 +46,111 @@ impl Log {
     pub fn info(message: String) {
         let log = Self {
             message,
-            level:LogLevel::Info,
+            level: LogLevel::Info,
             timestamp: chrono::Local::now().naive_local(),
         };
         log_helper(log);
     }
-    pub fn critical_fail(message:String){
+    pub fn critical_fail(message: String)-> ! {
+        alert_critical_failure(&message);
         let log = Self {
             message,
-            level:LogLevel::CriticalFail,
+            level: LogLevel::CriticalFail,
             timestamp: chrono::Local::now().naive_local(),
         };
         log_helper(log);
-    }
-    pub fn error(message:String){
-        let log = Self {
-            message,
-            level:LogLevel::Error,
-            timestamp: chrono::Local::now().naive_local(),
-        };
-        log_helper(log);
-    }
-}
-
-
-
-fn log_helper(log: Log) {
-    let path = state_dir().join("log.json");
-    let _ = ensure_file(&path, "[]\n");
-
-    let mut logs: Vec<Value> = fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
-
-    let ts_display = log.timestamp.format("%Y-%m-%d %I:%M:%S%.f %p");
-
-    let formatted = format!(
-        "[{}]({}): {}",
-        log.level, ts_display, log.message
-    );
-    eprintln!("{}", formatted);
-
-    logs.insert(
-        0,
-        json!({
-            "level": log.level.to_string(),
-            "timestamp": ts_display.to_string(),
-            "message": log.message
-        }),
-    );
-
-    const MAX_LOG_ENTRIES: usize = 2000;
-    if logs.len() > MAX_LOG_ENTRIES {
-        logs.truncate(MAX_LOG_ENTRIES);
-    }
-
-    if let Ok(serialized) = serde_json::to_string_pretty(&logs) {
-        let _ = atomic_write_text(&path, &serialized);
-    }
-    if log.level == LogLevel::CriticalFail {
-        alert_critical_failure(&log.message);
         process::exit(1);
     }
+    pub fn error(message: String) {
+        let log = Self {
+            message,
+            level: LogLevel::Error,
+            timestamp: chrono::Local::now().naive_local(),
+        };
+        log_helper(log);
+    }
+    pub fn console(message: String) {
+        let log = Self {
+            message,
+            level: LogLevel::Console,
+            timestamp: chrono::Local::now().naive_local(),
+        };
+        log_helper(log);
+    }
+    pub fn dev(message: String) {
+        if !dev_mode_enabled() {
+            return;
+        }
+        let log = Self {
+            message,
+            level: LogLevel::Dev,
+            timestamp: chrono::Local::now().naive_local(),
+        };
+        log_helper(log);
+    }
+
+    pub fn dev_timing(label: &str, started: std::time::Instant) {
+        if !dev_mode_enabled() {
+            return;
+        }
+        let ms = started.elapsed().as_millis();
+        Self::dev(format!("[timing] {} {}ms", label, ms));
+    }
 }
 
+fn level_log_path(level: &LogLevel) -> Option<PathBuf> {
+    match level {
+        LogLevel::Info => Some(state_dir().join("info.log")),
+        LogLevel::Error => Some(state_dir().join("error.log")),
+        LogLevel::CriticalFail => Some(state_dir().join("criticalfail.log")),
+        _ => None,
+    }
+}
+
+fn append_level_log(path: &PathBuf, line: &str) {
+    let _ = ensure_file(path, "");
+    if fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut file| writeln!(file, "{}", line))
+        .is_err()
+    {
+        return;
+    }
+
+    let content = fs::read_to_string(path).unwrap_or_default();
+    let line_count = content.lines().count();
+    if line_count <= MAX_LOG_LINES {
+        return;
+    }
+
+    let trimmed = content
+        .lines()
+        .skip(line_count - MAX_LOG_LINES)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let _ = atomic_write_text(path, &format!("{}\n", trimmed));
+}
+
+fn log_helper(log: Log) {
+    let ts_display = log.timestamp.format("%Y-%m-%d %I:%M:%S%.f %p");
+    let formatted = format!("[{}]({}): {}", log.level, ts_display, log.message);
+
+    if log.level == LogLevel::Console {
+        println!("{}", formatted);
+        let _ = std::io::stdout().flush();
+        return;
+    }
+    if log.level == LogLevel::Dev {
+        eprintln!("{}", formatted);
+        return;
+    }
+
+    eprintln!("{}", formatted);
+
+    if let Some(path) = level_log_path(&log.level) {
+        let file_line = format!("[{}]: {}", ts_display, log.message);
+        append_level_log(&path, &file_line);
+    }
+}

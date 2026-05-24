@@ -1,29 +1,29 @@
+//v0
 pub mod account;
-pub mod browser;
 pub mod logger;
 pub mod config;
 pub mod critical_alert;
 pub mod video;
 
-use std::{fs, path::{PathBuf, Path}};
-use std::collections::{HashMap, HashSet};
+use std::{fs, path::{Path, PathBuf}};
+use std::collections::HashSet;
 use std::process::Command;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::sync::OnceLock;
 use crate::{print_how_to_use_and_exit, RunMode};
-use crate::db::browser::{cookies_have_any, log_auth_storage_status};
-use crate::db::config::{load_config, save_config, account_name, is_tracked, Config};
+use crate::browser::{cookies_have_any, is_headless, launch_browser, log_auth_storage_status};
+use crate::db::config::{account_name, is_tracked, load_config, save_config, Config};
 use crate::db::account::{account_file, add_account, load_accounts, update_account_state};
 use crate::db::logger::Log;
 use anyhow::Result;
 use anyhow::anyhow;
 use crate::discover::{first_discovery, login};
 use tokio::io::AsyncWriteExt;
-use crate::db::video::{append_videos, save_all, videos_file};
+use crate::db::video::{append_videos, load_all, save_all, videos_file};
 
 static YT_DLP_READY: OnceLock<()> = OnceLock::new();
-
+//v1
 fn ensure_state_dir(state_dir: &Path) {
     if state_dir.exists() {
         return;
@@ -36,32 +36,20 @@ fn ensure_state_dir(state_dir: &Path) {
         ));
     }
 }
-
+//v1
 pub fn state_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("TTA_STATE_DIR") {
-        let state_dir = PathBuf::from(dir);
-        ensure_state_dir(&state_dir);
-        return state_dir;
-    }
-
-    let manifest_state = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("state");
-
     if cfg!(debug_assertions) {
+        let manifest_state = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("state");
         ensure_state_dir(&manifest_state);
         return manifest_state;
     }
-
-    if manifest_state.exists() {
-        ensure_state_dir(&manifest_state);
-        return manifest_state;
-    }
-
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
     let exe_state = exe.parent().unwrap_or_else(|| Path::new(".")).join("state");
     ensure_state_dir(&exe_state);
     exe_state
 }
 
+//v1
 pub fn ensure_file(path: &PathBuf, default_contents: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -76,6 +64,7 @@ pub fn ensure_file(path: &PathBuf, default_contents: &str) -> Result<()> {
     Ok(())
 }
 
+//v1
 pub fn atomic_write_text(path: &Path, contents: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -99,10 +88,9 @@ pub fn atomic_write_text(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
-
+//v1
 pub async fn check_state(mode: &RunMode) {
     let (cookies_path, mut config) = general_check();
-
     match mode {
         RunMode::Login => {
             log_auth_storage_status();
@@ -122,11 +110,10 @@ pub async fn check_state(mode: &RunMode) {
                 print_how_to_use_and_exit(&format!("yt-dlp check/install failed: {}", e));
             }
             config_and_accounts_sync(&mut config).await;
-
         }
     }
 }
-
+//v0
 async fn config_and_accounts_sync(config: &mut Config) {
     let accounts = match load_accounts() {
         Ok(a) => a,
@@ -148,10 +135,10 @@ async fn config_and_accounts_sync(config: &mut Config) {
     }
     let state_names: HashSet<String> = accounts.iter().map(|a| a.name.clone()).collect();
     if config_all_names != state_names {
-        println!(
+        Log::dev(format!(
             "[sync] starting reconciliation: config_all_names={:?}, state_names={:?}",
             config_all_names, state_names
-        );
+        ));
 
         let config_only_tracked: Vec<String> = config_tracked_names
             .iter()
@@ -166,19 +153,23 @@ async fn config_and_accounts_sync(config: &mut Config) {
             .cloned()
             .collect();
 
+        let ran_discovery = !config_only_tracked.is_empty();
 
-        let msg = format!(
-            "Pre-Reconciling accounts: config_all_names={:?}, state_names={:?}, config_only_tracked={:?}, state_only={:?}",
+        Log::dev(format!(
+            "[sync] Pre-Reconciling accounts: config_all_names={:?}, state_names={:?}, config_only_tracked={:?}, state_only={:?}",
             config_all_names, state_names, config_only_tracked, state_only
-        );
-        Log::info(msg);
-
+        ));
+        Log::dev(format!("headless:{}", is_headless()) );
+        let session = match launch_browser("https://www.tiktok.com/", is_headless()) {
+            Ok(s) => s,
+            Err(e) => print_how_to_use_and_exit(&format!("Failed to launch browser for sync: {}", e)),
+        };
         for name in config_only_tracked {
-            println!("[sync] first_discovery start for @{}", name);
-            Log::info(format!("[sync] first_discovery start for @{}", name));
-            match first_discovery(name.clone()).await {
+            Log::console(format!("sync {}", name));
+            Log::dev(format!("[sync] first_discovery start for @{}", name));
+            match first_discovery(name.clone(), &session).await {
                 Ok((acc,vids))=>{
-                    Log::info(format!(
+                    Log::dev(format!(
                         "[sync] first_discovery success for @{}: count={}, diff={}, unavailable={}, vids={}",
                         acc.name,
                         acc.count,
@@ -186,15 +177,23 @@ async fn config_and_accounts_sync(config: &mut Config) {
                         acc.unavailable,
                         vids.len()
                     ));
-                    if append_videos(&acc.name.to_string(), &vids).is_err() {
-                        println!("Error Appending");
-                        if let Err(e) = save_all(&HashMap::from([(acc.name.clone(), vids.clone())])) {
-                            print_how_to_use_and_exit(&format!("Failed to save seen videos: {}", e));
-                        }
+                    let mut seen_vids = match load_all() {
+                        Ok(v) => v,
+                        Err(e) => print_how_to_use_and_exit(&format!(
+                            "Failed to load seen_videos.json: {}",
+                            e
+                        )),
                     };
+                    append_videos(&mut seen_vids, &acc.name.to_string(), &vids);
+                    if let Err(e) = save_all(&seen_vids) {
+                        print_how_to_use_and_exit(&format!(
+                            "Failed to save seen_videos.json: {}",
+                            e
+                        ));
+                    }
                     if let Err(e) = add_account(&acc) {
                         if e.to_string().contains("account already exists") {
-                            Log::info(format!(
+                            Log::dev(format!(
                                 "[sync] account @{} already exists, applying first_discovery state",
                                 acc.name
                             ));
@@ -210,17 +209,14 @@ async fn config_and_accounts_sync(config: &mut Config) {
                             print_how_to_use_and_exit(&format!("Failed to add account: {}", e));
                         }
                     } else {
-                        Log::info(format!("[sync] added new account @{}", acc.name));
+                        Log::dev(format!("[sync] added new account @{}", acc.name));
                     }
-                    println!("Added Account: {:?}", acc);
+                    Log::dev(format!("[sync] added account: {:?}", acc));
                 }
                 Err(e)=>{print_how_to_use_and_exit(&format!("First discovery failed for @{}: {}", name, e)); }
             }
-            println!("[sync] first_discovery done for @{}", name);
-            Log::info(format!("[sync] first_discovery done for @{}", name));
+            Log::dev(format!("[sync] first_discovery done for @{}", name));
         }
-
-
 
         let mut config_updated = false;
         for name in state_only {
@@ -234,15 +230,18 @@ async fn config_and_accounts_sync(config: &mut Config) {
             if let Err(e) = save_config(config) {
                 print_how_to_use_and_exit(&format!("Failed to save config.yaml during reconciliation: {}", e));
             }
-            println!("[sync] reconciliation updated config.yaml");
+            Log::dev("[sync] reconciliation updated config.yaml".to_string());
         }
 
-        println!("[sync] reconciliation finished");
+        Log::dev("[sync] reconciliation finished".to_string());
+        if ran_discovery || config_updated {
+            Log::console("sync ok".to_string());
+        }
     }
 }
 
 
-
+//v0
 fn general_check() -> (PathBuf, Config) {
     let state_dir = state_dir();
 
@@ -271,7 +270,8 @@ fn general_check() -> (PathBuf, Config) {
     (cookies_path, config)
 }
 
-fn resolve_executable_path(default_name: &str) -> PathBuf {
+//v1
+pub fn resolve_executable_path(default_name: &str) -> PathBuf {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let candidate = dir.join("state").join(default_name);
@@ -284,10 +284,18 @@ fn resolve_executable_path(default_name: &str) -> PathBuf {
             }
         }
     }
+    if cfg!(debug_assertions) {
+        if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
+            let candidate = PathBuf::from(manifest).join("state").join(default_name);
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
 
     PathBuf::from(default_name)
 }
-
+//v1
 async fn download_yt_dlp(dest: &PathBuf) -> Result<()> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
@@ -314,6 +322,7 @@ async fn download_yt_dlp(dest: &PathBuf) -> Result<()> {
     Ok(())
 }
 
+//v1
 async fn ensure_yt_dlp() -> Result<()> {
     if YT_DLP_READY.get().is_some() {
         return Ok(());
@@ -323,6 +332,7 @@ async fn ensure_yt_dlp() -> Result<()> {
     let ready = is_ytdlp_runnable(&ytdlp_path);
 
     if !ready {
+        Log::dev("yt-dlp get".to_string());
         let target = state_dir().join("yt-dlp.exe");
         download_yt_dlp(&target).await?;
         if !is_ytdlp_runnable(&target) {
@@ -333,10 +343,11 @@ async fn ensure_yt_dlp() -> Result<()> {
     let _ = YT_DLP_READY.set(());
     Ok(())
 }
-
-fn is_ytdlp_runnable(path: &PathBuf) -> bool {
+//v1
+fn is_ytdlp_runnable(path: &PathBuf) -> bool   {
     let mut check_cmd = Command::new(path);
     check_cmd.arg("--version");
+    //suppress cmd showing
     #[cfg(windows)]
     check_cmd.creation_flags(0x08000000);
     match check_cmd.output() {

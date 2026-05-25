@@ -12,7 +12,7 @@ use std::process::Command;
 use std::os::windows::process::CommandExt;
 use std::sync::OnceLock;
 use crate::{print_how_to_use_and_exit, RunMode};
-use crate::browser::{cookies_have_any, is_headless, launch_browser, log_auth_storage_status};
+use crate::browser::{cookies_have_any, is_headless, launch_browser_with_cookies, log_auth_storage_status};
 use crate::db::config::{account_name, is_tracked, load_config, save_config, Config};
 use crate::db::account::{account_file, add_account, load_accounts, update_account_state};
 use crate::db::logger::Log;
@@ -160,10 +160,12 @@ async fn config_and_accounts_sync(config: &mut Config) {
             config_all_names, state_names, config_only_tracked, state_only
         ));
         Log::dev(format!("headless:{}", is_headless()) );
-        let session = match launch_browser("https://www.tiktok.com/", is_headless()) {
-            Ok(s) => s,
-            Err(e) => print_how_to_use_and_exit(&format!("Failed to launch browser for sync: {}", e)),
-        };
+        
+       if !config_only_tracked.is_empty(){
+           let session = match launch_browser_with_cookies("https://www.tiktok.com/", is_headless()) {
+               Ok(s) => s,
+               Err(e) => print_how_to_use_and_exit(&format!("Failed to launch browser for sync: {}", e)),
+           };
         for name in config_only_tracked {
             Log::console(format!("sync {}", name));
             Log::dev(format!("[sync] first_discovery start for @{}", name));
@@ -217,6 +219,7 @@ async fn config_and_accounts_sync(config: &mut Config) {
             }
             Log::dev(format!("[sync] first_discovery done for @{}", name));
         }
+       }
 
         let mut config_updated = false;
         for name in state_only {

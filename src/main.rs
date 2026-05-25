@@ -7,11 +7,10 @@ mod core;
 
 use crate::db::check_state;
 use crate::db::logger::{Log};
-use crate::discover::login;
+use crate::discover::{ login};
 use std::{env, process};
 use std::sync::OnceLock;
-
-use crate::core::default_loop;
+use crate::core::{default_loop};
 
 //v1
 #[derive(Debug)]
@@ -62,9 +61,13 @@ fn print_how_to_use_and_exit(reason: &str) -> ! {
 
 }
 pub static DEV_MODE : OnceLock<bool>=OnceLock::new();
+
+
+
 //v1
 #[tokio::main]
 async fn main() {
+
     let mode = parse_args();
     Log::console(format!("Tiktok-Archiver 1.1.0 | Run Mode:{:?}", mode));
     let _ = DEV_MODE.set(matches!(mode, RunMode::Dev));

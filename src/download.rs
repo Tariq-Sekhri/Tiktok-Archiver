@@ -111,7 +111,7 @@ fn yt_dlp(vid: &Video)->Result<()>{
 #[cfg(test)]
 mod test_download{
     use super::*;
-    #[test]
+    // #[test]
     fn test_download_video(){
         // vid is normal
         //video is not there -> download
@@ -133,4 +133,12 @@ mod test_download{
 
 
     }
+    #[test]
+    fn test_yt_download(){
+            let username= "asd".to_string();
+            let id=  0;
+            let video= Video::new(format!("https://www.tiktok.com/@{}/video/{}", username, id), id,username );
+            assert_eq!( yt_dlp(&video).is_ok(), true);
+            assert_eq!(video.file_path().unwrap().exists(), true);
+        }
 }

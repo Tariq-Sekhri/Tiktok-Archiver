@@ -29,6 +29,8 @@ pub fn is_headless()->bool{
 
 }
 
+
+
 //v1
 pub fn navigate_to_fav(session: &BrowserSession) -> Result<()> {
     let t0 = Instant::now();
@@ -480,8 +482,9 @@ pub fn cookies_have_any(path: &PathBuf) -> bool {
 fn tiktok_profile_path() -> PathBuf {
     state_dir().join("tiktok_profile")
 }
+
 //v0
-pub fn launch_browser(url: &str, headless: bool) -> Result<BrowserSession> {
+pub fn launch_browser_with_cookies(url: &str, headless: bool) -> Result<BrowserSession> {
     let cookie_params = load_cookie_params()?;
     let profile_path = tiktok_profile_path();
     Log::dev("browser: launch".to_string());
@@ -553,6 +556,57 @@ pub fn launch_browser(url: &str, headless: bool) -> Result<BrowserSession> {
             ));
         }
     }
+
+    Ok(BrowserSession {
+        tab: Some(tab),
+        browser: Some(browser),
+    })
+}
+
+//v0
+pub fn launch_browser_without_cookies(url: &str, headless: bool) -> Result<BrowserSession> {
+    Log::dev("browser: launch".to_string());
+    Log::dev(format!(
+        "[Browser] state={} profile={}",
+        state_dir().display(),
+        tiktok_profile_path().display(),
+    ));
+
+    let mut builder = browser::LaunchOptionsBuilder::default();
+    builder.headless(headless);
+    builder.window_size(Some((1920, 1080)));
+    builder.idle_browser_timeout(Duration::from_secs(3600));
+    builder.args(vec![
+        OsStr::new("--disable-blink-features=AutomationControlled"),
+        OsStr::new("--disable-infobars"),
+        OsStr::new("--no-sandbox"),
+    ]);
+    builder.ignore_default_args(vec![OsStr::new("--enable-automation")]);
+    let launch_opts = builder
+        .build()
+        .context("invalid browser launch options")?;
+
+    let browser = Browser::new(launch_opts)
+        .context("Failed to launch headless_chrome browser")?;
+    let tab = browser
+        .new_tab()
+        .context("Failed to open new browser tab for TikTok session")?;
+    tab.set_user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36", Some("en-US,en;q=0.9"), None)
+        .context("Failed to set TikTok user agent on tab")?;
+
+
+        tab.navigate_to(url)
+            .with_context(|| format!("Failed to navigate TikTok tab to URL: {}", url))
+            .map_err(|e| {
+                Log::dev(format!("[Browser] navigate_to error for {}: {:#}", url, e));
+                e
+            })?;
+        tab.wait_until_navigated()
+            .with_context(|| format!("Timed out waiting for navigation to {}", url))?;
+
+    std::thread::sleep(Duration::from_secs(2));
+
+
 
     Ok(BrowserSession {
         tab: Some(tab),

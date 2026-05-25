@@ -9,6 +9,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "headless_chrome",
+ "rand",
  "regex",
  "reqwest",
  "serde",

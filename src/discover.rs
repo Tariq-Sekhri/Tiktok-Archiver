@@ -4,10 +4,11 @@ use anyhow::{anyhow, Context, Result};
 use regex::Regex;
 use serde_json::Value;
 use std::{collections::{HashMap, HashSet}, io, time::{Duration, Instant}};
-use crate::{browser::{clear_tiktok_profile, click_refresh_if_present, cookie_params_have_session, cookie_to_param, launch_browser, load_cookie_params, save_cookies, scroll_to_bottom, scroll_x_times, BrowserSession}, db::{account::Account, logger::Log, video::Video}};
-use crate::browser::navigate_to_fav;
+use crate::{browser::{clear_tiktok_profile, click_refresh_if_present, cookie_params_have_session, cookie_to_param, launch_browser_with_cookies, load_cookie_params, save_cookies, scroll_to_bottom, scroll_x_times, BrowserSession}, db::{account::Account, logger::Log, video::Video}};
+use crate::browser::{launch_browser_without_cookies, navigate_to_fav};
 use crate::core::timeout;
 use crate::db::logger::LogLevel;
+use crate::db::logger::LogLevel::Console;
 
 //v1
 pub async fn first_discovery(username:String, session:&BrowserSession) -> Result<(Account, Vec<Video>)> {
@@ -99,7 +100,7 @@ pub async fn login() -> Result<()> {
         clear_tiktok_profile()?;
     }
 
-    let session = launch_browser(
+    let session = launch_browser_without_cookies(
         "https://www.tiktok.com/login/qrcode",
         false,
     )?;
@@ -284,54 +285,51 @@ pub fn video_count_from_html(html: &str) -> Result<i64> {
 }
 
 
-//v1
-async fn fetch_count_http(username: &str) -> Result<i64> {
-    let params = load_cookie_params()?;
-    if params.is_empty() {
-        return Err(anyhow!("no cookies for http count"));
+
+const PROFILE_VIDEO_COUNT_JS: &str = r#"
+(function() {
+    const el = document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__');
+    if (!el || !el.textContent) return null;
+    try {
+        const data = JSON.parse(el.textContent);
+        const vc = data?.__DEFAULT_SCOPE__?.['webapp.user-detail']?.userInfo?.stats?.videoCount;
+        return typeof vc === 'number' ? vc : null;
+    } catch (_) {
+        return null;
     }
+})()
+"#;
+
+//v1
+pub async fn fetch_video_count(session: &BrowserSession, username: &str) -> Result<i64> {
+
     let url = format!("https://www.tiktok.com/@{}", username);
-    let cookie_header: String = params
-        .iter()
-        .map(|p| format!("{}={}", p.name, p.value))
-        .collect::<Vec<_>>()
-        .join("; ");
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .build()
-        .context("http client")?;
-    let resp = client
-        .get(&url)
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-        .header("Cookie", cookie_header)
-        .header("Accept-Language", "en-US,en;q=0.9")
-        .send()
-        .await
-        .context("http profile fetch")?;
-    if !resp.status().is_success() {
-        return Err(anyhow!("http status {}", resp.status()));
+    let tab = session.tab()?;
+    tab.navigate_to(&url)
+        .with_context(|| format!("navigate to profile {}", url))?;
+    tab.wait_for_element_with_custom_timeout(
+        "script#__UNIVERSAL_DATA_FOR_REHYDRATION__",
+        Duration::from_secs(30),
+    )
+        .context("wait for __UNIVERSAL_DATA_FOR_REHYDRATION__ script")?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let rng = rand::random_range(10..=15);
+    timeout(rng,Console).await;
+    loop {
+        if let Some(count) = tab
+            .evaluate(PROFILE_VIDEO_COUNT_JS, false)
+            .context("evaluate profile videoCount")?
+            .value
+            .and_then(|v| v.as_i64())
+        {
+
+            return Ok(count);
+        }
+        if Instant::now() >= deadline {
+            return Err(anyhow!(
+                "timed out waiting for webapp.user-detail videoCount on @{}",
+                username
+            ));
+        }
     }
-    let html = resp.text().await.context("http body")?;
-    let count = video_count_from_html(&html)?;
-    Log::dev(format!(
-        "[api] get_new_count @{} videoCount={} (http)",
-        username,
-        count
-    ));
-    Ok(count)
 }
-
-//v1
-pub async fn get_new_count(session: &BrowserSession, username: &str) -> Result<i64> {
-    if let Ok(n) = fetch_count_http(username).await {
-        return Ok(n);
-    }
-    session.tab()?.navigate_to(&format!("https://www.tiktok.com/@{}", &username))?;
-    let html = session.tab()?.get_content()?;
-    video_count_from_html(&html)
-}
-
-
-
-
-

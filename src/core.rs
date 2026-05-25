@@ -2,12 +2,13 @@
 
 use std::{collections::HashSet, io::{self, IsTerminal, Write}, time::{Duration, Instant}};
 use tokio::time::sleep;
-use crate::{browser::{is_headless, launch_browser}, db::{account::{load_tracked_accounts, update_account_state, Account, CountEvent}, config::{load_config, Config}, logger::{Log, LogLevel}, video::{append_videos, bucket_count, load_all, save_all, Video}}, discover::{fav, fetch_newest_videos}, download::download_pending};
-use crate::discover::get_new_count;
+use crate::{browser::{is_headless}, db::{account::{load_tracked_accounts, update_account_state, Account, CountEvent}, config::{load_config, Config}, logger::{Log, LogLevel}, video::{append_videos, bucket_count, load_all, save_all, Video}}, discover::{fav, fetch_newest_videos}, download::download_pending};
+use crate::discover::{fetch_video_count};
 use anyhow::Result;
+use crate::browser::{launch_browser_with_cookies, launch_browser_without_cookies};
 
 //v1
-pub async fn timeout(wait_secs: u8, level: LogLevel) {
+pub async fn timeout(wait_secs: u16, level: LogLevel) {
     if !io::stdout().is_terminal() || level == LogLevel::Dev {
         sleep(Duration::from_secs(wait_secs as u64)).await;
         return;
@@ -26,22 +27,20 @@ async fn run_poll_fav_cycle(accounts: Vec<Account>,config:Config) -> Result<()> 
     let mut seen_vids = load_all()?;
     let headless= is_headless();
     Log::dev(format!("headless:{}", headless) );
-    let session = launch_browser("https://www.tiktok.com", headless)?;
-
-    let mut count_results: Vec<Result<i64>> = Vec::with_capacity(accounts.len());
-    for account in &accounts {
-        count_results.push(get_new_count(&session, &account.name).await);
-    }
-
-    for (account, new_count) in accounts.into_iter().zip(count_results) {
+    let no_cookies_session = launch_browser_without_cookies("https://www.tiktok.com", headless)?;
+    let session = launch_browser_with_cookies("https://www.tiktok.com", headless)?;
+    for account in accounts {
         Log::dev(format!("@{} polling tiktok video count", account.name));
-        let new_count = match new_count {
+
+
+        let new_count = match fetch_video_count(&no_cookies_session, &account.name).await {
             Ok(n) => n,
             Err(e) => {
                 Log::error(format!("{}: {}", account.name, e));
                 continue;
             }
         };
+
         let existing_videos: Vec<Video> = match seen_vids.get(&account.name) {
             Some(v) => v.clone(),
             None => {
@@ -133,7 +132,7 @@ pub async fn default_loop() {
             Ok(accounts) => accounts,
             Err(e) => {
                 Log::error(format!("Failed to load accounts: {}", e));
-                timeout(5u8, LogLevel::Error).await;
+                timeout(5, LogLevel::Error).await;
                 continue;
             }
         };
@@ -141,7 +140,7 @@ pub async fn default_loop() {
             Ok(c) => c,
             Err(e) => {
                 Log::error(format!("Config Failed to load: {}", e));
-                timeout(5u8, LogLevel::Error).await;
+                timeout(5u16, LogLevel::Error).await;
                 continue;
             }
         };
@@ -149,7 +148,7 @@ pub async fn default_loop() {
             Log::error(format!("poll/fav cycle failed: {}", e));
         }
         Log::dev_timing("poll_cycle", cycle_start);
-        timeout(60, LogLevel::Console).await;
+        timeout(5*60, LogLevel::Console).await;
     }
 }
 //v1

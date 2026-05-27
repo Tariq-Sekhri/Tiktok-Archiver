@@ -3,24 +3,47 @@ use anyhow::{anyhow, Result};
 use std::{collections::HashMap, fs, process::Command};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Instant};
 use crate::browser::{load_cookie_params, write_ytdlp_cookie_jar};
 use crate::db::{ logger::Log, resolve_executable_path, video::{Video}};
 use crate::db::video::DownloadStatus::{Downloaded};
+use crate::db::video::save_all;
+
 //v1
-fn download_videos(mut vids:Vec<&mut Video>, ) -> Result<()> {
+fn download_videos(mut vids: Vec<&mut Video>) -> Result<()> {
     let len = vids.len();
-    for (index, vid) in vids.iter_mut().enumerate(){
-       match download_video(vid){
+    for (index, vid) in vids.iter_mut().enumerate() {
+        let t0 = Instant::now();
+        Log::console(format!(
+            "[download] {}/{}: video {} (@{}) starting",
+            index + 1,
+            len,
+            vid.id,
+            vid.username
+        ));
+        match download_video(vid) {
             Ok(()) => {
                 vid.download_status = Downloaded;
                 vid.download_date = Some(chrono::Local::now().naive_local());
-                Log::dev(format!("{}/{}",index, len));
-
+                Log::console(format!(
+                    "[download] {}/{}: video {} ok ({}ms)",
+                    index + 1,
+                    len,
+                    vid.id,
+                    t0.elapsed().as_millis()
+                ));
             }
             Err(e) => {
                 vid.download_failed(&e);
-                Log::error(format!("Download {} Failed:{}",vid.id, e ))
+                Log::error(format!("Download {} Failed:{}", vid.id, e));
+                Log::console(format!(
+                    "[download] {}/{}: video {} failed ({}ms): {}",
+                    index + 1,
+                    len,
+                    vid.id,
+                    t0.elapsed().as_millis(),
+                    e
+                ));
             }
         }
     }
@@ -28,13 +51,19 @@ fn download_videos(mut vids:Vec<&mut Video>, ) -> Result<()> {
 }
 //v1
 pub fn download_pending(seen_vids: &mut HashMap<String, Vec<Video>>) -> Result<()> {
-
-    let pending:Vec<&mut Video> = seen_vids.iter_mut().flat_map(|(_, vids)| vids.iter_mut().filter(|vid| vid.is_pending() )).collect();
+    let pending: Vec<&mut Video> = seen_vids
+        .iter_mut()
+        .flat_map(|(_, vids)| vids.iter_mut().filter(|vid| vid.is_pending()))
+        .collect();
     if pending.is_empty() {
+        Log::console("[download] no pending videos".to_string());
         return Ok(());
     }
+    Log::console(format!("[download] {} pending video(s)", pending.len()));
     download_videos(pending)?;
-
+    Log::console("[download] saving database after downloads".to_string());
+    save_all(&seen_vids)?;
+    Log::console("[download] database saved".to_string());
     Ok(())
 }
 
@@ -45,6 +74,7 @@ pub fn download_video(vid: &Video) -> Result<()> {
 
     match download_pre_check(&file_path, &vid.other_file_path()?) {
         Idk::Download => {
+            Log::console(format!("[download] video {}: running yt-dlp", vid.id));
             if let Some(parent) = vid.file_path()?.parent() {
                 fs::create_dir_all(parent)?;
             }
@@ -129,13 +159,11 @@ mod test_download{
         //  fav id:2 not there, ->
         //  fav id:2 already there ->return,
         //  normal id:2 other
-
-
-
     }
     #[test]
     fn test_yt_download(){
-            let username= "asd".to_string();
+
+        let username= "".to_string();
             let id=  0;
             let video= Video::new(format!("https://www.tiktok.com/@{}/video/{}", username, id), id,username );
             assert_eq!( yt_dlp(&video).is_ok(), true);

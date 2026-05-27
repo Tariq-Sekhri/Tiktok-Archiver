@@ -1,26 +1,15 @@
 //v0
-pub mod account;
 pub mod logger;
 pub mod config;
 pub mod critical_alert;
 pub mod video;
 
-use std::{fs, path::{Path, PathBuf}};
-use std::collections::HashSet;
-use std::process::Command;
+use std::{fs, path::{Path, PathBuf}, process::Command, sync::OnceLock, };
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
-use std::sync::OnceLock;
-use crate::{print_how_to_use_and_exit, RunMode};
-use crate::browser::{cookies_have_any, is_headless, launch_browser_with_cookies, log_auth_storage_status};
-use crate::db::config::{account_name, is_tracked, load_config, save_config, Config};
-use crate::db::account::{account_file, add_account, load_accounts, update_account_state};
-use crate::db::logger::Log;
-use anyhow::Result;
-use anyhow::anyhow;
-use crate::discover::{first_discovery, login};
+use anyhow::{anyhow, Result};
 use tokio::io::AsyncWriteExt;
-use crate::db::video::{append_videos, load_all, save_all, videos_file};
+use crate::{browser::{cookies_have_any, log_auth_storage_status}, db::{config::{load_config, Config}, logger::Log, video::videos_file, }, discover::login, print_how_to_use_and_exit, RunMode, };
 
 static YT_DLP_READY: OnceLock<()> = OnceLock::new();
 //v1
@@ -90,7 +79,7 @@ pub fn atomic_write_text(path: &Path, contents: &str) -> Result<()> {
 
 //v1
 pub async fn check_state(mode: &RunMode) {
-    let (cookies_path, mut config) = general_check();
+    let (cookies_path, _) = general_check();
     match mode {
         RunMode::Login => {
             log_auth_storage_status();
@@ -109,140 +98,9 @@ pub async fn check_state(mode: &RunMode) {
             if let Err(e) = ensure_yt_dlp().await {
                 print_how_to_use_and_exit(&format!("yt-dlp check/install failed: {}", e));
             }
-            config_and_accounts_sync(&mut config).await;
         }
     }
 }
-//v0
-async fn config_and_accounts_sync(config: &mut Config) {
-    let accounts = match load_accounts() {
-        Ok(a) => a,
-        Err(e) => {
-            print_how_to_use_and_exit(&format!("Failed to load accounts.json: {}", e));
-        }
-    };
-
-    let mut config_all_names: HashSet<String> = HashSet::new();
-    let mut config_tracked_names: HashSet<String> = HashSet::new();
-
-
-    for account in &config.accounts {
-        let name = account_name(account).to_string();
-        config_all_names.insert(name.clone());
-        if is_tracked(account) {
-            config_tracked_names.insert(name);
-        }
-    }
-    let state_names: HashSet<String> = accounts.iter().map(|a| a.name.clone()).collect();
-    if config_all_names != state_names {
-        Log::dev(format!(
-            "[sync] starting reconciliation: config_all_names={:?}, state_names={:?}",
-            config_all_names, state_names
-        ));
-
-        let config_only_tracked: Vec<String> = config_tracked_names
-            .iter()
-            .filter(|name| !state_names.contains(*name))
-            .cloned()
-            .collect();
-
-
-        let state_only: Vec<String> = state_names
-            .iter()
-            .filter(|name| !config_all_names.contains(*name))
-            .cloned()
-            .collect();
-
-        let ran_discovery = !config_only_tracked.is_empty();
-
-        Log::dev(format!(
-            "[sync] Pre-Reconciling accounts: config_all_names={:?}, state_names={:?}, config_only_tracked={:?}, state_only={:?}",
-            config_all_names, state_names, config_only_tracked, state_only
-        ));
-        Log::dev(format!("headless:{}", is_headless()) );
-        
-       if !config_only_tracked.is_empty(){
-           let session = match launch_browser_with_cookies("https://www.tiktok.com/", is_headless()) {
-               Ok(s) => s,
-               Err(e) => print_how_to_use_and_exit(&format!("Failed to launch browser for sync: {}", e)),
-           };
-        for name in config_only_tracked {
-            Log::console(format!("sync {}", name));
-            Log::dev(format!("[sync] first_discovery start for @{}", name));
-            match first_discovery(name.clone(), &session).await {
-                Ok((acc,vids))=>{
-                    Log::dev(format!(
-                        "[sync] first_discovery success for @{}: count={}, diff={}, unavailable={}, vids={}",
-                        acc.name,
-                        acc.count,
-                        acc.diff,
-                        acc.unavailable,
-                        vids.len()
-                    ));
-                    let mut seen_vids = match load_all() {
-                        Ok(v) => v,
-                        Err(e) => print_how_to_use_and_exit(&format!(
-                            "Failed to load seen_videos.json: {}",
-                            e
-                        )),
-                    };
-                    append_videos(&mut seen_vids, &acc.name.to_string(), &vids);
-                    if let Err(e) = save_all(&seen_vids) {
-                        print_how_to_use_and_exit(&format!(
-                            "Failed to save seen_videos.json: {}",
-                            e
-                        ));
-                    }
-                    if let Err(e) = add_account(&acc) {
-                        if e.to_string().contains("account already exists") {
-                            Log::dev(format!(
-                                "[sync] account @{} already exists, applying first_discovery state",
-                                acc.name
-                            ));
-                            if let Err(update_err) =
-                                update_account_state(&acc, acc.count, acc.diff, acc.unavailable)
-                            {
-                                print_how_to_use_and_exit(&format!(
-                                    "Failed to update existing account @{}: {}",
-                                    acc.name, update_err
-                                ));
-                            }
-                        } else {
-                            print_how_to_use_and_exit(&format!("Failed to add account: {}", e));
-                        }
-                    } else {
-                        Log::dev(format!("[sync] added new account @{}", acc.name));
-                    }
-                    Log::dev(format!("[sync] added account: {:?}", acc));
-                }
-                Err(e)=>{print_how_to_use_and_exit(&format!("First discovery failed for @{}: {}", name, e)); }
-            }
-            Log::dev(format!("[sync] first_discovery done for @{}", name));
-        }
-       }
-
-        let mut config_updated = false;
-        for name in state_only {
-            if !config_all_names.contains(&name) {
-                config.accounts.push(format!("{}:false", name));
-                config_updated = true;
-            }
-        }
-
-        if config_updated {
-            if let Err(e) = save_config(config) {
-                print_how_to_use_and_exit(&format!("Failed to save config.yaml during reconciliation: {}", e));
-            }
-            Log::dev("[sync] reconciliation updated config.yaml".to_string());
-        }
-
-        Log::dev("[sync] reconciliation finished".to_string());
-        if ran_discovery || config_updated {
-            Log::console("sync ok".to_string());
-        }
-    }
-}
-
 
 //v0
 fn general_check() -> (PathBuf, Config) {
@@ -251,10 +109,6 @@ fn general_check() -> (PathBuf, Config) {
     if let Err(e) = videos_file() {
         print_how_to_use_and_exit(&format!("Failed to init seen_videos.json: {}", e));
     }
-    if let Err(e) = account_file() {
-        print_how_to_use_and_exit(&format!("Failed to init accounts.json: {}", e));
-    }
-
     let cookies_path = state_dir.join("saved_cookies.json");
     if let Err(e) = ensure_file(&cookies_path, "{\n  \"cookies\": []\n}\n") {
         print_how_to_use_and_exit(&format!("Failed to init saved_cookies.json: {}", e));

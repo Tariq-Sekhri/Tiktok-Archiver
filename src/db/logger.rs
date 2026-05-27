@@ -107,30 +107,19 @@ fn level_log_path(level: &LogLevel) -> Option<PathBuf> {
     }
 }
 
-fn append_level_log(path: &PathBuf, line: &str) {
+fn prepend_level_log(path: &PathBuf, line: &str) {
     let _ = ensure_file(path, "");
-    if fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .and_then(|mut file| writeln!(file, "{}", line))
-        .is_err()
-    {
-        return;
-    }
-
     let content = fs::read_to_string(path).unwrap_or_default();
-    let line_count = content.lines().count();
-    if line_count <= MAX_LOG_LINES {
-        return;
-    }
-
-    let trimmed = content
-        .lines()
-        .skip(line_count - MAX_LOG_LINES)
-        .collect::<Vec<_>>()
-        .join("\n");
-    let _ = atomic_write_text(path, &format!("{}\n", trimmed));
+    let mut lines: Vec<&str> = content.lines().collect();
+    lines.insert(0, line);
+    lines.truncate(MAX_LOG_LINES);
+    let body = lines.join("\n");
+    let written = if body.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", body)
+    };
+    let _ = atomic_write_text(path, &written);
 }
 
 fn log_helper(log: Log) {
@@ -151,6 +140,6 @@ fn log_helper(log: Log) {
 
     if let Some(path) = level_log_path(&log.level) {
         let file_line = format!("[{}]: {}", ts_display, log.message);
-        append_level_log(&path, &file_line);
+        prepend_level_log(&path, &file_line);
     }
 }

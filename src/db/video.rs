@@ -1,4 +1,3 @@
-//v1
 
 use std::{collections::{HashMap, HashSet}, fs, path::PathBuf, };
 use anyhow::{Context, Result, Error};
@@ -14,14 +13,12 @@ pub enum DownloadStatus {
     NotDownloaded,
     DownloadFailed(u8),
 }
-//v0
 pub fn serialize_download_date<S>(opt: &Option<NaiveDateTime>, s: S, ) -> std::result::Result<S::Ok, S::Error> where S: Serializer,{
     match opt {
         Some(dt) => s.serialize_str(&dt.format("%Y-%m-%d %I:%M:%S %p").to_string()),
         None => s.serialize_none(),
     }
 }
-//v0
 pub fn deserialize_download_date<'de, D>(    d: D,) -> std::result::Result<Option<NaiveDateTime>, D::Error>where    D: Deserializer<'de>, {
     let opt: Option<String> = Option::deserialize(d)?;
     match opt {
@@ -50,8 +47,6 @@ pub fn deserialize_download_date<'de, D>(    d: D,) -> std::result::Result<Optio
 pub const VIDEO_EXT: &str = "mp4";
 
 
-
-//v0
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Video {
     pub url: String,
@@ -72,7 +67,6 @@ fn default_source_available() -> bool {
     true
 }
 
-//v0
 impl Video {
     pub fn new(url: String, video_id: i64, username: String) -> Self {
         Self {
@@ -134,7 +128,6 @@ impl Video {
 }
 
 
-//v1
 pub fn videos_file() -> Result<PathBuf> {
     let path = state_dir().join("seen_videos.json");
     ensure_file(&path, "{}\n")?;
@@ -142,14 +135,12 @@ pub fn videos_file() -> Result<PathBuf> {
 }
 
 
-//v1
 pub fn load_all() -> Result<HashMap<String, Vec<Video>>> {
     let path = videos_file()?;
     let file = fs::File::open(path)?;
     serde_json::from_reader(file).context("Error loading videos")
 }
 
-//v1
 pub fn save_all(map: &HashMap<String, Vec<Video>>) -> Result<()> {
     let path = videos_file()?;
     let json = if cfg!(debug_assertions) {
@@ -161,13 +152,6 @@ pub fn save_all(map: &HashMap<String, Vec<Video>>) -> Result<()> {
     Ok(())
 }
 
-
-//v0
-pub fn bucket_count(map: &HashMap<String, Vec<Video>>, username: &str) -> usize {
-    map.get(username).map(|v| v.len()).unwrap_or(0)
-}
-
-//v0
 pub fn append_videos(map: &mut HashMap<String, Vec<Video>>,username: &str,vids:&[Video]) -> usize {
     let user_vids = map.entry(username.to_string()).or_default();
     let mut existing_ids: HashSet<i64> = user_vids.iter().map(|v| v.id).collect();

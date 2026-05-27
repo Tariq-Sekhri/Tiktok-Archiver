@@ -1,94 +1,12 @@
-//v1
-
 use anyhow::{anyhow, Context, Result};
 use regex::Regex;
-use serde_json::Value;
 use std::{collections::{HashMap, HashSet}, io, time::{Duration, Instant}};
-use crate::{browser::{clear_tiktok_profile, click_refresh_if_present, cookie_params_have_session, cookie_to_param, launch_browser_with_cookies, load_cookie_params, save_cookies, scroll_to_bottom, scroll_x_times, BrowserSession}, db::{account::Account, logger::Log, video::Video}};
+use crate::{browser::{clear_tiktok_profile, click_refresh_if_present, cookie_params_have_session, cookie_to_param, load_cookie_params, save_cookies, scroll_x_times, BrowserSession}, db::{logger::Log, video::Video}};
 use crate::browser::{launch_browser_without_cookies, navigate_to_fav};
 use crate::core::timeout;
 use crate::db::logger::LogLevel;
-use crate::db::logger::LogLevel::Console;
+use crate::db::video::{append_videos, save_all};
 
-//v1
-pub async fn first_discovery(username:String, session:&BrowserSession) -> Result<(Account, Vec<Video>)> {
-    Log::dev(format!(
-        "[discover] first_discovery @{}",
-        username
-    ));
-    session.tab()?.navigate_to(&format!("https://www.tiktok.com/@{}", &username))?;
-    timeout(2, LogLevel::Console).await;
-    let result = (|| {
-        scroll_to_bottom(&session)?;
-        let mut html = session.tab()?.get_content().context("get_content")?;
-        let mut new_vids = videos_from_html(&html)?;
-        Log::dev(format!(
-            "[discover] first_discovery @{} anchor links={}",
-            username,
-            new_vids.len()
-        ));
-
-        if new_vids.is_empty() {
-            if click_refresh_if_present(&session)? {
-                Log::dev(format!(
-                    "[discover] first_discovery @{} clicked Refresh before reload",
-                    username
-                ));
-                std::thread::sleep(Duration::from_secs(2));
-                scroll_to_bottom(&session)?;
-                html = session.tab()?.get_content().context("get_content")?;
-                new_vids = videos_from_html(&html)?;
-                Log::dev(format!(
-                    "[discover] first_discovery @{} anchor links after Refresh={}",
-                    username,
-                    new_vids.len()
-                ));
-            }
-        }
-
-        if new_vids.is_empty() {
-            Log::error("No New Videos Reloading Page".to_string());
-            session.tab()?.reload(false, None)?;
-            scroll_to_bottom(&session)?;
-            html = session.tab()?.get_content().context("get_content")?;
-            new_vids = videos_from_html(&html)?;
-            Log::dev(format!(
-                "[discover] first_discovery @{} anchor links after reload={}",
-                username,
-                new_vids.len()
-            ));
-            if new_vids.is_empty() {
-                if click_refresh_if_present(&session)? {
-                    Log::dev(format!(
-                        "[discover] first_discovery @{} clicked Refresh after reload",
-                        username
-                    ));
-                    std::thread::sleep(Duration::from_secs(2));
-                    scroll_to_bottom(&session)?;
-                    html = session.tab()?.get_content().context("get_content")?;
-                    new_vids = videos_from_html(&html)?;
-                }
-            }
-            if new_vids.is_empty() {
-                return Err(anyhow::anyhow!("No new video"));
-            }
-        }
-
-        let count = video_count_from_html(&html)?;
-        let diff = count - new_vids.len() as i64;
-        Log::dev(format!(
-            "[discover] first_discovery @{} videoCount={} diff={}",
-            username,
-            count,
-            diff
-        ));
-
-        Ok((Account::new(username.to_string(), count, diff), new_vids))
-    })();
-    result
-}
-
-//v1
 pub async fn login() -> Result<()> {
     let cookies = load_cookie_params()?;
     if !cookies.is_empty() {
@@ -136,28 +54,9 @@ pub async fn login() -> Result<()> {
     println!("You can now run `cargo run` to start the default watcher.");
     Ok(())
 }
-//v1
-pub fn fetch_newest_videos(account: &Account, session:&BrowserSession) -> Result<Vec<Video>> {
-    let url = format!("https://www.tiktok.com/@{}", account.name);
-    Log::dev(format!(
-        "[discover] fetch_newest_videos @{} url={} wait_after_load_s={}",
-        account.name,
-        url,
-        2
-    ));
-    session.tab()?.navigate_to(&url)?;
-    std::thread::sleep(Duration::from_secs(2));
-    let vids = videos_from_html(&session.tab()?.get_content().context("get_content")?)?;
-    Log::dev(format!(
-        "[discover] fetch_newest_videos @{} parsed {} anchor links",
-        account.name,
-        vids.len()
-    ));
-    Ok(vids)
-}
 
 
-//v1
+
 pub fn scrolls_per_pass(pass: u32) -> u32 {
     const CAP: u32 = 800;
     match pass {
@@ -170,51 +69,140 @@ pub fn scrolls_per_pass(pass: u32) -> u32 {
         }
     }
 }
-//v1
-pub fn fav(session: &BrowserSession, seen: &mut HashMap<String, Vec<Video>> ) -> Result<bool> {
+
+
+
+pub fn fetch_new_fav(session: &BrowserSession, seen: &mut HashMap<String, Vec<Video>>) -> Result<()> {
+    let t0 = Instant::now();
+    Log::console("[fav] navigating to favorites".to_string());
     navigate_to_fav(&session)?;
-    let mut have_new_vids = false;
+    Log::console(format!(
+        "[fav] navigation done ({}ms)",
+        t0.elapsed().as_millis()
+    ));
     let mut existing_fav_ids: HashSet<i64> = seen
         .get("favorite")
         .map(|v| v.iter().map(|x| x.id).collect())
         .unwrap_or_default();
+    Log::console(format!(
+        "[fav] scrolling ({} known favorites)",
+        existing_fav_ids.len()
+    ));
+    let scroll_start = Instant::now();
+    let new_vids = scroll_while_new_video(session, &mut existing_fav_ids, true)?;
+    Log::console(format!(
+        "[fav] scroll done: {} new ({}ms)",
+        new_vids.len(),
+        scroll_start.elapsed().as_millis()
+    ));
+    let should_save = !new_vids.is_empty();
+    let fav = seen.entry("favorite".to_string()).or_default();
+    for vid in new_vids {
+        fav.push(vid.to_owned());
+    }
+    if should_save {
+        Log::console("[fav] saving database".to_string());
+        save_all(seen)?;
+        Log::console("[fav] database saved".to_string());
+    }
+    Ok(())
+}
+
+pub async fn fetch_new_videos(
+    username: &str,
+    session: &BrowserSession,
+    seen: &mut HashMap<String, Vec<Video>>,
+) -> Result<()> {
+    let profile_url = format!("https://www.tiktok.com/@{}", username);
+    Log::console(format!("[@{username}] navigating to {profile_url}"));
+    let t0 = Instant::now();
+    session.tab()?.navigate_to(profile_url.as_str())?;
+    Log::console(format!(
+        "[@{username}] navigate sent ({}ms), waiting 2s",
+        t0.elapsed().as_millis()
+    ));
+    timeout(5, LogLevel::Console).await;
+    Log::console(format!("[@{username}] checking for refresh button"));
+    click_refresh_if_present(&session)?;
+    let known = seen
+        .get(username)
+        .map(|vids| vids.len())
+        .unwrap_or(0);
+    Log::console(format!(
+        "[@{username}] scrolling profile ({} known videos)",
+        known
+    ));
+    let mut existing_ids = seen
+        .get(username)
+        .map(|vids| vids.iter().map(|vid| vid.id).collect())
+        .unwrap_or_default();
+    let scroll_start = Instant::now();
+    let new_vids = scroll_while_new_video(&session, &mut existing_ids, false)?;
+    Log::console(format!(
+        "[@{username}] scroll done: {} new ({}ms)",
+        new_vids.len(),
+        scroll_start.elapsed().as_millis()
+    ));
+    let should_save = !new_vids.is_empty();
+    append_videos(seen, username, &new_vids);
+    if should_save {
+        Log::console(format!("[@{username}] saving {} new to database", new_vids.len()));
+        save_all(seen)?;
+        Log::console(format!("[@{username}] database saved"));
+    }
+    Ok(())
+}
+
+
+pub fn scroll_while_new_video(
+    session: &BrowserSession,
+    existing_ids: &mut HashSet<i64>,
+    is_fav: bool,
+) -> Result<Vec<Video>> {
+    let label = if is_fav { "fav" } else { "profile" };
     let mut pass = 0u32;
+    let mut new_vids: Vec<Video> = vec![];
     loop {
         pass += 1;
+        let pass_start = Instant::now();
+        Log::console(format!("[scroll/{label}] pass {pass}: reading page HTML"));
         let html = session.tab()?.get_content().context("get_content")?;
-        let new_fav_vids: Vec<Video> = videos_from_html(&html)?.into_iter()
-            .filter(|vid| !existing_fav_ids.contains(&vid.id)).collect();
-        Log::dev(format!("[fav] pass {}: found {} videos on page", pass, new_fav_vids.len()));
+        let found_vids: Vec<Video> = videos_from_html(&html)?
+            .into_iter()
+            .filter(|vid| !existing_ids.contains(&vid.id))
+            .collect();
         let mut new_count = 0u32;
-        for fav in &new_fav_vids {
-            if existing_fav_ids.contains(&fav.id) {
+        for vid in &found_vids {
+            if existing_ids.contains(&vid.id) {
                 continue;
             }
             new_count += 1;
-            let mut fav_video = fav.clone();
-            fav_video.is_fav = true;
-
-            existing_fav_ids.insert(fav.id);
-
-            let favorite_videos = seen.entry("favorite".to_string()).or_default();
-                favorite_videos.push(fav_video.to_owned());
-            have_new_vids = true;
+            let mut vid = vid.clone();
+            vid.is_fav = is_fav;
+            existing_ids.insert(vid.id);
+            new_vids.push(vid.to_owned());
         }
-
-
         if new_count == 0 {
-            Log::dev(format!("[fav] pass {}: no new items, done", pass));
+            Log::console(format!(
+                "[scroll/{label}] pass {pass}: no new items, done ({}ms, {} total new)",
+                pass_start.elapsed().as_millis(),
+                new_vids.len()
+            ));
             break;
         }
-
         let scroll_amount = scrolls_per_pass(pass);
-        Log::dev(format!("[fav] pass {}: scroll: {}", pass, scroll_amount));
-        let scroll_t0 = Instant::now();
+        Log::console(format!(
+            "[scroll/{label}] pass {pass}: {new_count} new, scrolling {scroll_amount}x ({}ms parse)",
+            pass_start.elapsed().as_millis()
+        ));
+        let scroll_start = Instant::now();
         scroll_x_times(scroll_amount, session)?;
-        Log::dev_timing("fav_pass_scroll", scroll_t0);
+        Log::console(format!(
+            "[scroll/{label}] pass {pass}: scroll finished ({}ms)",
+            scroll_start.elapsed().as_millis()
+        ));
     }
-    Log::dev(format!("[fav] finished after {} passes", pass));
-    Ok(have_new_vids)
+    Ok(new_vids)
 }
 
 
@@ -249,87 +237,3 @@ pub fn videos_from_html(html: &str) -> Result<Vec<Video>> {
     Ok(for_ret)
 }
 
-
-//v1
-fn parse_rehydration(html: &str) -> Option<Value> {
-    let re = Regex::new(
-        r#"(?s)<script[^>]*id=["']__UNIVERSAL_DATA_FOR_REHYDRATION__["'][^>]*>([^<]+)</script>"#,
-    ).ok()?;
-
-    let caps = re.captures(html)?;
-    let json_str = caps.get(1)?.as_str().trim();
-
-    serde_json::from_str(json_str).ok()
-}
-//v1
-fn video_count_fallback(html: &str) -> Option<i64> {
-    let re = Regex::new(r#""videoCount"\s*:\s*(\d+)"#).ok()?;
-    let caps = re.captures(html)?;
-    caps.get(1)?.as_str().parse().ok()
-}
-
-//v1
-pub fn video_count_from_html(html: &str) -> Result<i64> {
-    if let Some(data) = parse_rehydration(html) {
-        if let Some(v) = data
-            .pointer("/__DEFAULT_SCOPE__/webapp.user-detail/userInfo/stats/videoCount")
-            .and_then(|n| n.as_i64())
-        {
-            return Ok(v);
-        }
-    }
-    if let Some(v) = video_count_fallback(html) {
-        return Ok(v);
-    }
-    Err(anyhow!("videoCount not found in page"))
-}
-
-
-
-const PROFILE_VIDEO_COUNT_JS: &str = r#"
-(function() {
-    const el = document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__');
-    if (!el || !el.textContent) return null;
-    try {
-        const data = JSON.parse(el.textContent);
-        const vc = data?.__DEFAULT_SCOPE__?.['webapp.user-detail']?.userInfo?.stats?.videoCount;
-        return typeof vc === 'number' ? vc : null;
-    } catch (_) {
-        return null;
-    }
-})()
-"#;
-
-//v1
-pub async fn fetch_video_count(session: &BrowserSession, username: &str) -> Result<i64> {
-
-    let url = format!("https://www.tiktok.com/@{}", username);
-    let tab = session.tab()?;
-    tab.navigate_to(&url)
-        .with_context(|| format!("navigate to profile {}", url))?;
-    tab.wait_for_element_with_custom_timeout(
-        "script#__UNIVERSAL_DATA_FOR_REHYDRATION__",
-        Duration::from_secs(30),
-    )
-        .context("wait for __UNIVERSAL_DATA_FOR_REHYDRATION__ script")?;
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let rng = rand::random_range(10..=15);
-    timeout(rng,Console).await;
-    loop {
-        if let Some(count) = tab
-            .evaluate(PROFILE_VIDEO_COUNT_JS, false)
-            .context("evaluate profile videoCount")?
-            .value
-            .and_then(|v| v.as_i64())
-        {
-
-            return Ok(count);
-        }
-        if Instant::now() >= deadline {
-            return Err(anyhow!(
-                "timed out waiting for webapp.user-detail videoCount on @{}",
-                username
-            ));
-        }
-    }
-}

@@ -1,7 +1,7 @@
 use std::fs;
 use std::env;
 use std::path::{Path, PathBuf};
-use crate::db::{atomic_write_text, ensure_file};
+use crate::db::{ensure_file};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
@@ -20,12 +20,7 @@ pub fn load_config()->Result<Config>{
     Ok(serde_yaml::from_reader(&file)?)
 }
 
-pub fn save_config(config:&Config)->Result<()>{
-    let path = config_file()?;
-    let yaml = serde_yaml::to_string(&config)?;
-    atomic_write_text(&path, &yaml)?;
-    Ok(())
-}
+
 
 fn config_file() -> Result<PathBuf> {
     let dir = if cfg!(debug_assertions) {
@@ -41,16 +36,12 @@ fn config_file() -> Result<PathBuf> {
     Ok(path)
 }
 
-pub fn account_name(entry: &str) -> &str {
-    let entry = entry.trim();
-    if let Some((name, _)) = entry.split_once(':') {
-        name
-    } else {
-        entry
-    }
-}
 
 pub fn is_tracked(entry: &str) -> bool {
     let entry = entry.trim();
     !entry.ends_with(":false")
+}
+
+pub fn load_tracked_accounts()->Result<Vec<String>>{
+    Ok(load_config()?.accounts.into_iter().filter(|acc| is_tracked(acc)).collect())
 }

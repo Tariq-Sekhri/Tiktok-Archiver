@@ -1,13 +1,12 @@
-//v1
-
-use std::{collections::HashSet, io::{self, IsTerminal, Write}, time::{Duration, Instant}};
+use std::{io::{self, IsTerminal, Write}, time::{Duration, Instant}};
 use tokio::time::sleep;
-use crate::{browser::{is_headless}, db::{account::{load_tracked_accounts, update_account_state, Account, CountEvent}, config::{load_config, Config}, logger::{Log, LogLevel}, video::{append_videos, bucket_count, load_all, save_all, Video}}, discover::{fav, fetch_newest_videos}, download::download_pending};
-use crate::discover::{fetch_video_count};
+use crate::{browser::{is_headless}, db::{config::{load_config, Config}, logger::{Log, LogLevel}, video::load_all},  download::download_pending};
 use anyhow::Result;
-use crate::browser::{launch_browser_with_cookies, launch_browser_without_cookies};
+use crate::browser::{launch_browser_with_cookies};
+use crate::db::config::load_tracked_accounts;
+use crate::db::logger::LogLevel::Console;
+use crate::discover::{fetch_new_fav, fetch_new_videos};
 
-//v1
 pub async fn timeout(wait_secs: u16, level: LogLevel) {
     if !io::stdout().is_terminal() || level == LogLevel::Dev {
         sleep(Duration::from_secs(wait_secs as u64)).await;
@@ -23,103 +22,106 @@ pub async fn timeout(wait_secs: u16, level: LogLevel) {
 }
 
 //v1
-async fn run_poll_fav_cycle(accounts: Vec<Account>,config:Config) -> Result<()> {
-    let mut seen_vids = load_all()?;
-    let headless= is_headless();
-    Log::dev(format!("headless:{}", headless) );
-    let no_cookies_session = launch_browser_without_cookies("https://www.tiktok.com", headless)?;
-    let session = launch_browser_with_cookies("https://www.tiktok.com", headless)?;
-    for account in accounts {
-        Log::dev(format!("@{} polling tiktok video count", account.name));
+async fn main_loop(usernames: Vec<String>, config: Config) -> Result<()> {
+    let loop_start = Instant::now();
+    let user_count = usernames.len();
+    Log::console(format!(
+        "[main_loop] start: {} account(s), download_fav={}",
+        user_count, config.download_fav
+    ));
 
+    let t0 = Instant::now();
+    Log::console("[main_loop] loading video database".to_string());
+    let mut seen = load_all()?;
+    let tracked: usize = seen.values().map(|v| v.len()).sum();
+    Log::console(format!(
+        "[main_loop] database loaded: {} users, {} videos ({}ms)",
+        seen.len(),
+        tracked,
+        t0.elapsed().as_millis()
+    ));
 
-        let new_count = match fetch_video_count(&no_cookies_session, &account.name).await {
-            Ok(n) => n,
+    let t0 = Instant::now();
+    Log::console(format!(
+        "[main_loop] launching browser (headless={})",
+        is_headless()
+    ));
+    let session = launch_browser_with_cookies("https://www.tiktok.com", is_headless())?;
+    Log::console(format!(
+        "[main_loop] browser ready ({}ms)",
+        t0.elapsed().as_millis()
+    ));
+
+    for (index, username) in usernames.iter().enumerate() {
+        let user_start = Instant::now();
+        Log::console(format!(
+            "[main_loop] user {}/{}: @{} — fetch starting",
+            index + 1,
+            user_count,
+            username
+        ));
+        match fetch_new_videos(username, &session, &mut seen).await {
+            Ok(()) => Log::console(format!(
+                "[main_loop] user {}/{}: @{} — fetch ok ({}ms)",
+                index + 1,
+                user_count,
+                username,
+                user_start.elapsed().as_millis()
+            )),
             Err(e) => {
-                Log::error(format!("{}: {}", account.name, e));
-                continue;
-            }
-        };
-
-        let existing_videos: Vec<Video> = match seen_vids.get(&account.name) {
-            Some(v) => v.clone(),
-            None => {
-                Log::error(format!(
-                    "{}: no entry in seen_videos, using empty list",
-                    account.name
+                Log::error(format!("User Error Error: {}", e));
+                Log::console(format!(
+                    "[main_loop] user {}/{}: @{} — fetch failed ({}ms): {}",
+                    index + 1,
+                    user_count,
+                    username,
+                    user_start.elapsed().as_millis(),
+                    e
                 ));
-                Vec::new()
             }
-        };
-
-        let existing_ids: HashSet<i64> = existing_videos.iter().map(|v| v.id).collect();
-        let (unavailable, new_videos): (i64, Vec<Video>) =
-            match CountEvent::observe(account.count, new_count) {
-                CountEvent::Same => {
-                    Log::console(format!("{}: same", account.name));
-                    (account.unavailable, Vec::new())
-                }
-                CountEvent::Increased => {
-                    Log::console(format!(
-                        "@{} count increased {} -> {}",
-                        account.name, account.count, new_count
-                    ));
-                    let fetched_videos = match fetch_newest_videos(&account, &session) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            Log::error(format!(
-                                "{}: fetch_newest_videos failed: {}",
-                                account.name, e
-                            ));
-                            continue;
-                        }
-                    };
-                    let new_v: Vec<Video> = fetched_videos.into_iter()
-                        .filter(|v| !existing_ids.contains(&v.id)).collect();
-                    (account.unavailable, new_v)
-                }
-                CountEvent::Decreased => {
-                    let unavailable = account.unavailable + (account.count - new_count);
-                    Log::console(format!(
-                        "@{} count decreased {} -> {}, unavailable {} -> {} (delta={})",
-                        account.name,
-                        account.count,
-                        new_count,
-                        account.unavailable,
-                        unavailable,
-                        account.count - new_count
-                    ));
-                    (unavailable, Vec::new())
-                }
-            };
-
-        if !new_videos.is_empty() {
-            Log::dev(format!(
-                "@{} appending {} videos to seen_videos",
-                account.name,
-                new_videos.len()
-            ));
-            append_videos(&mut seen_vids, &account.name, &new_videos);
-            save_all(&seen_vids)?;
-
         }
-
-        let total_seen = bucket_count(&seen_vids, &account.name);
-        reconcile_account_state(&account, new_count, unavailable, total_seen);
+        Log::console(format!(
+            "[main_loop] user {}/{}: @{} — waiting 20s before next",
+            index + 1,
+            user_count,
+            username
+        ));
+        timeout(20, Console).await;
     }
+
     if config.download_fav {
-            match fav(&session, &mut seen_vids) {
-            Ok(fav_dirty) => {
-                if fav_dirty {
-                    save_all(&seen_vids)?;
-                }
+        let t0 = Instant::now();
+        Log::console("[main_loop] favorites fetch starting".to_string());
+        match fetch_new_fav(&session, &mut seen) {
+            Ok(()) => Log::console(format!(
+                "[main_loop] favorites fetch ok ({}ms)",
+                t0.elapsed().as_millis()
+            )),
+            Err(e) => {
+                Log::error(format!("Fav Error: {}", e));
+                Log::console(format!(
+                    "[main_loop] favorites fetch failed ({}ms): {}",
+                    t0.elapsed().as_millis(),
+                    e
+                ));
             }
-            Err(e) => Log::error(format!("Fav Error: {}", e)),
         }
+    } else {
+        Log::console("[main_loop] favorites fetch skipped (download_fav=false)".to_string());
     }
 
-    download_pending(&mut seen_vids)?;
-    save_all(&seen_vids)?;
+    let t0 = Instant::now();
+    Log::console("[main_loop] download pending videos starting".to_string());
+    download_pending(&mut seen)?;
+    Log::console(format!(
+        "[main_loop] download pending finished ({}ms)",
+        t0.elapsed().as_millis()
+    ));
+    Log::console(format!(
+        "[main_loop] complete ({}ms total)",
+        loop_start.elapsed().as_millis()
+    ));
+    Log::dev_timing("main_loop", loop_start);
     Ok(())
 }
 
@@ -144,49 +146,10 @@ pub async fn default_loop() {
                 continue;
             }
         };
-        if let Err(e) = run_poll_fav_cycle(accounts,  config).await {
-            Log::error(format!("poll/fav cycle failed: {}", e));
+        if let Err(e) = main_loop(accounts, config).await {
+            Log::error(format!("main loop failed: {}", e));
         }
         Log::dev_timing("poll_cycle", cycle_start);
         timeout(5*60, LogLevel::Console).await;
-    }
-}
-//v1
-fn reconcile_account_state(account: &Account, new_count: i64, unavailable: i64, total_seen: usize) {
-    let total_seen_videos_count = total_seen as i64;
-    Log::dev(format!("@{} reconcile enter: new_count={} unavailable_in={} stored_count={} stored_diff={} stored_unavailable={}", account.name, new_count, unavailable,        account.count,        account.diff,        account.unavailable));
-    let diff = new_count + unavailable - total_seen_videos_count;
-    Log::dev(format!("@{} reconcile: total_seen={} diff={} (formula: {} + {} - {} = {})", account.name,        total_seen_videos_count,diff,new_count,        unavailable, total_seen_videos_count, diff));
-
-    if diff < 0 {
-        let msg = format!(
-            "{}: diff became negative (count_now={}, unavailable={}, total_seen={})",
-            account.name, new_count, unavailable, total_seen_videos_count
-        );
-        Log::dev(format!("@{} reconcile CRITICAL: {}", account.name, msg));
-        Log::critical_fail(msg);
-    }
-
-    let invariant_lhs = new_count + unavailable - diff;
-
-    if invariant_lhs != total_seen_videos_count {
-        let msg = format!(
-            "{}: invariant violated (lhs={}, rhs={})",
-            account.name, invariant_lhs, total_seen_videos_count
-        );
-        Log::dev(format!(
-            "@{} reconcile invariant mismatch: {}",
-            account.name, msg
-        ));
-        Log::error(msg);
-    }
-
-    Log::dev(format!(
-        "@{} reconcile saving accounts.json: count={} diff={} unavailable={}",
-        account.name, new_count, diff, unavailable
-    ));
-    if let Err(e) = update_account_state(account, new_count, diff, unavailable) {
-        let msg = format!("Error updating state for @{}: {}", account.name, e);
-        Log::critical_fail(msg);
     }
 }

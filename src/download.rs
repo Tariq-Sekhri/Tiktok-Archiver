@@ -14,7 +14,7 @@ fn download_videos(mut vids: Vec<&mut Video>) -> Result<()> {
     let len = vids.len();
     for (index, vid) in vids.iter_mut().enumerate() {
         let t0 = Instant::now();
-        Log::console(format!(
+        Log::dev(format!(
             "[download] {}/{}: video {} (@{}) starting",
             index + 1,
             len,
@@ -25,7 +25,7 @@ fn download_videos(mut vids: Vec<&mut Video>) -> Result<()> {
             Ok(()) => {
                 vid.download_status = Downloaded;
                 vid.download_date = Some(chrono::Local::now().naive_local());
-                Log::console(format!(
+                Log::dev(format!(
                     "[download] {}/{}: video {} ok ({}ms)",
                     index + 1,
                     len,
@@ -36,7 +36,7 @@ fn download_videos(mut vids: Vec<&mut Video>) -> Result<()> {
             Err(e) => {
                 vid.download_failed(&e);
                 Log::error(format!("Download {} Failed:{}", vid.id, e));
-                Log::console(format!(
+                Log::dev(format!(
                     "[download] {}/{}: video {} failed ({}ms): {}",
                     index + 1,
                     len,
@@ -56,14 +56,15 @@ pub fn download_pending(seen_vids: &mut HashMap<String, Vec<Video>>) -> Result<(
         .flat_map(|(_, vids)| vids.iter_mut().filter(|vid| vid.is_pending()))
         .collect();
     if pending.is_empty() {
-        Log::console("[download] no pending videos".to_string());
+        Log::dev("[download] no pending videos".to_string());
         return Ok(());
     }
-    Log::console(format!("[download] {} pending video(s)", pending.len()));
+    Log::console(format!("{} video(s) to download", pending.len()));
+    Log::dev(format!("[download] {} pending video(s)", pending.len()));
     download_videos(pending)?;
-    Log::console("[download] saving database after downloads".to_string());
+    Log::dev("[download] saving database after downloads".to_string());
     save_all(&seen_vids)?;
-    Log::console("[download] database saved".to_string());
+    Log::dev("[download] database saved".to_string());
     Ok(())
 }
 
@@ -74,17 +75,17 @@ pub fn download_video(vid: &Video) -> Result<()> {
 
     match download_pre_check(&file_path, &vid.other_file_path()?) {
         Idk::Download => {
-            Log::console(format!("[download] video {}: running yt-dlp", vid.id));
+            Log::dev(format!("[download] video {}: running yt-dlp", vid.id));
             if let Some(parent) = vid.file_path()?.parent() {
                 fs::create_dir_all(parent)?;
             }
             yt_dlp(vid)
         }
         Idk::AlreadyDownloaded => {
-            Log::info(format!("Video:{} Already Downloaded",vid.id));
+            Log::info(format!("Video {} already on disk", vid.id));
             Ok(())}
         Idk::HardLink => {
-            Log::info(format!("hard link created for {}", vid.id));
+            Log::info(format!("Video {} linked from existing file", vid.id));
             Ok(fs::hard_link( &vid.other_file_path()?, &vid.file_path()?)?)
         }
     }
@@ -129,7 +130,7 @@ fn yt_dlp(vid: &Video)->Result<()>{
         .map_err(|e| anyhow!(format!("Failed to execute yt-dlp: {}", e)))?;
 
     if output.status.success() {
-        Log::console(format!("Video: {} Downloaded", vid.id));
+        Log::info(format!("Video {} downloaded", vid.id));
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);

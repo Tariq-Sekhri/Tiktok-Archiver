@@ -34,7 +34,6 @@ pub fn is_headless()->bool{
 //v1
 pub fn navigate_to_fav(session: &BrowserSession) -> Result<()> {
     let t0 = Instant::now();
-    Log::console("fav: profile".to_string());
     Log::dev("[fav] opening profile".to_string());
     session
         .tab()?
@@ -43,7 +42,6 @@ pub fn navigate_to_fav(session: &BrowserSession) -> Result<()> {
         .click()
         .context("click nav-profile")?;
     std::thread::sleep(Duration::from_secs(1));
-    Log::console("fav: tab".to_string());
     Log::dev("[fav] opening favorites tab".to_string());
     session
         .tab()?
@@ -483,7 +481,6 @@ fn tiktok_profile_path() -> PathBuf {
     state_dir().join("tiktok_profile")
 }
 
-//v0
 pub fn launch_browser_with_cookies(url: &str, headless: bool) -> Result<BrowserSession> {
     let cookie_params = load_cookie_params()?;
     let profile_path = tiktok_profile_path();
@@ -563,7 +560,6 @@ pub fn launch_browser_with_cookies(url: &str, headless: bool) -> Result<BrowserS
     })
 }
 
-//v0
 pub fn launch_browser_without_cookies(url: &str, headless: bool) -> Result<BrowserSession> {
     Log::dev("browser: launch".to_string());
     Log::dev(format!(
@@ -613,7 +609,6 @@ pub fn launch_browser_without_cookies(url: &str, headless: bool) -> Result<Brows
         browser: Some(browser),
     })
 }
-//v1
 pub fn scroll_to_bottom(session: &BrowserSession) -> Result<()> {
     loop {
         let reached_end: bool = session
@@ -647,7 +642,6 @@ pub fn scroll_to_bottom(session: &BrowserSession) -> Result<()> {
     }
     Ok(())
 }
-//v1
 pub fn scroll_x_times(x: u32, session: &BrowserSession) -> Result<()> {
         let mut loop_count = 0;
     loop {

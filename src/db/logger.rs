@@ -126,9 +126,15 @@ fn log_helper(log: Log) {
     let ts_display = log.timestamp.format("%Y-%m-%d %I:%M:%S%.f %p");
     let formatted = format!("[{}]({}): {}", log.level, ts_display, log.message);
 
-    if log.level == LogLevel::Console {
+    if log.level == LogLevel::Console || log.level == LogLevel::Info {
         println!("{}", formatted);
         let _ = std::io::stdout().flush();
+        if log.level == LogLevel::Info {
+            if let Some(path) = level_log_path(&log.level) {
+                let file_line = format!("[{}]: {}", ts_display, log.message);
+                prepend_level_log(&path, &file_line);
+            }
+        }
         return;
     }
     if log.level == LogLevel::Dev {

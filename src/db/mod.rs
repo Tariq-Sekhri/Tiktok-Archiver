@@ -2,6 +2,7 @@
 pub mod logger;
 pub mod config;
 pub mod critical_alert;
+pub mod poll_health;
 pub mod video;
 
 use std::{fs, path::{Path, PathBuf}, process::Command, sync::OnceLock, };

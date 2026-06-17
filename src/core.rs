@@ -7,6 +7,7 @@ use crate::{
     db::{
         config::{load_config, Config},
         logger::{Log, LogLevel},
+        poll_health::{maybe_critical_fail_on_poll_error, record_poll_success},
         video::load_all,
     },
     download::download_pending,
@@ -74,8 +75,8 @@ async fn main_loop(usernames: Vec<String>, config: Config) -> Result<()> {
             username
         ));
         if let Err(e) = fetch_new_videos(username, &session, &mut seen).await {
-            Log::error(format!("User Error Error: {}", e));
-            Log::console(format!("@{username} — failed: {e}"));
+            Log::error(format!("@{username} fetch failed: {:#}", e));
+            Log::console(format!("@{username} — failed: {e:#}"));
         }
         Log::dev(format!(
             "[main_loop] user {}/{}: @{} — fetch finished ({}ms)",
@@ -98,8 +99,8 @@ async fn main_loop(usernames: Vec<String>, config: Config) -> Result<()> {
         Log::console("Favorites".to_string());
         Log::dev("[main_loop] favorites fetch starting".to_string());
         if let Err(e) = fetch_new_fav(&session, &mut seen) {
-            Log::error(format!("Fav Error: {}", e));
-            Log::console(format!("Favorites — failed: {e}"));
+            Log::error(format!("favorites fetch failed: {:#}", e));
+            Log::console(format!("Favorites — failed: {e:#}"));
         }
         Log::dev(format!(
             "[main_loop] favorites fetch finished ({}ms)",
@@ -135,7 +136,9 @@ pub async fn default_loop() {
         let accounts = match load_tracked_accounts() {
             Ok(accounts) => accounts,
             Err(e) => {
-                Log::error(format!("Failed to load accounts: {}", e));
+                let detail = format!("failed to load accounts: {:#}", e);
+                Log::error(detail.clone());
+                maybe_critical_fail_on_poll_error(&detail);
                 timeout(5, LogLevel::Error).await;
                 continue;
             }
@@ -143,14 +146,20 @@ pub async fn default_loop() {
         let config = match load_config() {
             Ok(c) => c,
             Err(e) => {
-                Log::error(format!("Config Failed to load: {}", e));
+                let detail = format!("config failed to load: {:#}", e);
+                Log::error(detail.clone());
+                maybe_critical_fail_on_poll_error(&detail);
                 timeout(5u16, LogLevel::Error).await;
                 continue;
             }
         };
         if let Err(e) = main_loop(accounts, config).await {
-            Log::error(format!("main loop failed: {}", e));
-            Log::console(format!("Poll cycle failed: {e}"));
+            let detail = format!("main loop failed: {:#}", e);
+            Log::error(detail.clone());
+            Log::console(format!("Poll cycle failed: {e:#}"));
+            maybe_critical_fail_on_poll_error(&detail);
+        } else {
+            record_poll_success();
         }
         Log::dev_timing("poll_cycle", cycle_start);
         timeout(5 * 60, LogLevel::Console).await;

@@ -35,7 +35,7 @@ fn download_videos(mut vids: Vec<&mut Video>) -> Result<()> {
             }
             Err(e) => {
                 vid.download_failed(&e);
-                Log::error(format!("Download {} Failed:{}", vid.id, e));
+                Log::error(format!("download {} failed: {:#}", vid.id, e));
                 Log::dev(format!(
                     "[download] {}/{}: video {} failed ({}ms): {}",
                     index + 1,

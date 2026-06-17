@@ -10,8 +10,6 @@ use crate::db::critical_alert::alert_critical_failure;
 use crate::db::{atomic_write_text, ensure_file, state_dir};
 use crate::DEV_MODE;
 
-const MAX_LOG_LINES: usize = 1000;
-
 pub fn dev_mode_enabled() -> bool {
     *DEV_MODE.get().unwrap_or(&false)
 }
@@ -112,7 +110,6 @@ fn prepend_level_log(path: &PathBuf, line: &str) {
     let content = fs::read_to_string(path).unwrap_or_default();
     let mut lines: Vec<&str> = content.lines().collect();
     lines.insert(0, line);
-    lines.truncate(MAX_LOG_LINES);
     let body = lines.join("\n");
     let written = if body.is_empty() {
         String::new()

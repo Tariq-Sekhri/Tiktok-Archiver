@@ -481,22 +481,37 @@ fn tiktok_profile_path() -> PathBuf {
     state_dir().join("tiktok_profile")
 }
 
-pub fn launch_browser_with_cookies(url: &str, headless: bool) -> Result<BrowserSession> {
-    let cookie_params = load_cookie_params()?;
-    let profile_path = tiktok_profile_path();
-    Log::dev("browser: launch".to_string());
-    fs::create_dir_all(&profile_path)?;
-    let profile_dir = Some(profile_path.clone());
+fn resolve_chrome_path() -> Result<PathBuf> {
+    headless_chrome::browser::default_executable()
+        .map_err(|e| anyhow!("Chrome binary not found: {e}"))
+}
+
+fn launch_opts_summary(opts: &browser::LaunchOptions) -> String {
+    let chrome = opts
+        .path
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "unset".to_string());
+    let profile = opts
+        .user_data_dir
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "temp".to_string());
+    format!(
+        "chrome={chrome}, headless={}, profile={profile}",
+        opts.headless
+    )
+}
+
+fn build_launch_options(headless: bool, profile_dir: Option<PathBuf>) -> Result<browser::LaunchOptions<'static>> {
+    let chrome_path = resolve_chrome_path()?;
     Log::dev(format!(
-        "[Browser] state={} profile={} cookies_to_inject={}",
-        state_dir().display(),
-        tiktok_profile_path().display(),
-        cookie_params.len()
+        "[Browser] chrome binary: {}",
+        chrome_path.display()
     ));
-
-
     let mut builder = browser::LaunchOptionsBuilder::default();
     builder.headless(headless);
+    builder.path(Some(chrome_path));
     builder.window_size(Some((1920, 1080)));
     builder.idle_browser_timeout(Duration::from_secs(3600));
     builder.user_data_dir(profile_dir);
@@ -506,12 +521,34 @@ pub fn launch_browser_with_cookies(url: &str, headless: bool) -> Result<BrowserS
         OsStr::new("--no-sandbox"),
     ]);
     builder.ignore_default_args(vec![OsStr::new("--enable-automation")]);
-    let launch_opts = builder
+    builder
         .build()
-        .context("invalid browser launch options")?;
+        .context("invalid browser launch options")
+}
 
-    let browser = Browser::new(launch_opts)
-        .context("Failed to launch headless_chrome browser")?;
+fn spawn_browser(opts: browser::LaunchOptions<'static>) -> Result<Browser> {
+    let summary = launch_opts_summary(&opts);
+    Browser::new(opts).map_err(|e| {
+        anyhow!("headless_chrome Browser::new failed ({summary}): {e:#}")
+    })
+}
+
+pub fn launch_browser_with_cookies(url: &str, headless: bool) -> Result<BrowserSession> {
+    let cookie_params = load_cookie_params()?;
+    let profile_path = tiktok_profile_path();
+    Log::dev("browser: launch".to_string());
+    fs::create_dir_all(&profile_path)?;
+    let profile_dir = Some(profile_path.clone());
+    Log::dev(format!(
+        "[Browser] state={} profile={} cookies_to_inject={}",
+        state_dir().display(),
+        profile_path.display(),
+        cookie_params.len()
+    ));
+
+    let launch_opts = build_launch_options(headless, profile_dir)?;
+
+    let browser = spawn_browser(launch_opts)?;
     let tab = browser
         .new_tab()
         .context("Failed to open new browser tab for TikTok session")?;
@@ -568,22 +605,9 @@ pub fn launch_browser_without_cookies(url: &str, headless: bool) -> Result<Brows
         tiktok_profile_path().display(),
     ));
 
-    let mut builder = browser::LaunchOptionsBuilder::default();
-    builder.headless(headless);
-    builder.window_size(Some((1920, 1080)));
-    builder.idle_browser_timeout(Duration::from_secs(3600));
-    builder.args(vec![
-        OsStr::new("--disable-blink-features=AutomationControlled"),
-        OsStr::new("--disable-infobars"),
-        OsStr::new("--no-sandbox"),
-    ]);
-    builder.ignore_default_args(vec![OsStr::new("--enable-automation")]);
-    let launch_opts = builder
-        .build()
-        .context("invalid browser launch options")?;
+    let launch_opts = build_launch_options(headless, None)?;
 
-    let browser = Browser::new(launch_opts)
-        .context("Failed to launch headless_chrome browser")?;
+    let browser = spawn_browser(launch_opts)?;
     let tab = browser
         .new_tab()
         .context("Failed to open new browser tab for TikTok session")?;

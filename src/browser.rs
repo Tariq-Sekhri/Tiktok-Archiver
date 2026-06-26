@@ -6,10 +6,64 @@ use crate::db::{atomic_write_text, ensure_file, logger::{dev_mode_enabled, Log},
 
 const SESSION_COOKIE_NAMES: &[&str] = &["sid_tt", "sessionid", "sid_guard", "uid_tt", "tt_session_tlb_tag"];
 
+struct LoggedBrowser {
+    browser: Browser,
+    pid: Option<u32>,
+    profile: String,
+    headless: bool,
+    reason: String,
+    url: String,
+}
+
+impl LoggedBrowser {
+    fn launch(
+        opts: browser::LaunchOptions<'static>,
+        headless: bool,
+        profile: String,
+        reason: &str,
+        url: &str,
+    ) -> Result<Self> {
+        let summary = launch_opts_summary(&opts);
+        let browser = Browser::new(opts).map_err(|e| {
+            Log::info(format!(
+                "browser launch failed: reason={reason} headless={headless} profile={profile} url={url} ({summary}): {e:#}"
+            ));
+            anyhow!("headless_chrome Browser::new failed ({summary}): {e:#}")
+        })?;
+        let pid = browser.get_process_id();
+        let ws = browser.get_ws_url();
+        Log::info(format!(
+            "browser launched: pid={pid:?} headless={headless} profile={profile} reason={reason} url={url} ws={ws}"
+        ));
+        Ok(Self {
+            browser,
+            pid,
+            profile,
+            headless,
+            reason: reason.to_string(),
+            url: url.to_string(),
+        })
+    }
+
+    fn inner(&self) -> &Browser {
+        &self.browser
+    }
+}
+
+impl Drop for LoggedBrowser {
+    fn drop(&mut self) {
+        let ws = self.browser.get_ws_url();
+        Log::info(format!(
+            "browser shutdown: pid={:?} headless={} profile={} reason={} url={} ws={}",
+            self.pid, self.headless, self.profile, self.reason, self.url, ws
+        ));
+    }
+}
+
 pub struct BrowserSession {
     tab: Option<Arc<headless_chrome::Tab>>,
-    #[allow(unused)]
-    browser: Option<Browser>,
+    #[allow(dead_code)]
+    browser: Option<LoggedBrowser>,
 }
 
 impl BrowserSession {
@@ -526,13 +580,6 @@ fn build_launch_options(headless: bool, profile_dir: Option<PathBuf>) -> Result<
         .context("invalid browser launch options")
 }
 
-fn spawn_browser(opts: browser::LaunchOptions<'static>) -> Result<Browser> {
-    let summary = launch_opts_summary(&opts);
-    Browser::new(opts).map_err(|e| {
-        anyhow!("headless_chrome Browser::new failed ({summary}): {e:#}")
-    })
-}
-
 pub fn launch_browser_with_cookies(url: &str, headless: bool) -> Result<BrowserSession> {
     let cookie_params = load_cookie_params()?;
     let profile_path = tiktok_profile_path();
@@ -548,8 +595,19 @@ pub fn launch_browser_with_cookies(url: &str, headless: bool) -> Result<BrowserS
 
     let launch_opts = build_launch_options(headless, profile_dir)?;
 
-    let browser = spawn_browser(launch_opts)?;
-    let tab = browser
+    let logged_browser = LoggedBrowser::launch(
+        launch_opts,
+        headless,
+        profile_path.display().to_string(),
+        "poll",
+        url,
+    )?;
+    Log::info(format!(
+        "browser session starting: reason=poll cookies_to_inject={}",
+        cookie_params.len()
+    ));
+    let tab = logged_browser
+        .inner()
         .new_tab()
         .context("Failed to open new browser tab for TikTok session")?;
     tab.set_user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36", Some("en-US,en;q=0.9"), None)
@@ -591,9 +649,10 @@ pub fn launch_browser_with_cookies(url: &str, headless: bool) -> Result<BrowserS
         }
     }
 
+    Log::info("browser session ready: reason=poll".to_string());
     Ok(BrowserSession {
         tab: Some(tab),
-        browser: Some(browser),
+        browser: Some(logged_browser),
     })
 }
 
@@ -605,10 +664,19 @@ pub fn launch_browser_without_cookies(url: &str, headless: bool) -> Result<Brows
         tiktok_profile_path().display(),
     ));
 
+    let profile_path = tiktok_profile_path();
     let launch_opts = build_launch_options(headless, None)?;
 
-    let browser = spawn_browser(launch_opts)?;
-    let tab = browser
+    let logged_browser = LoggedBrowser::launch(
+        launch_opts,
+        headless,
+        profile_path.display().to_string(),
+        "login",
+        url,
+    )?;
+    Log::info("browser session starting: reason=login".to_string());
+    let tab = logged_browser
+        .inner()
         .new_tab()
         .context("Failed to open new browser tab for TikTok session")?;
     tab.set_user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36", Some("en-US,en;q=0.9"), None)
@@ -628,9 +696,10 @@ pub fn launch_browser_without_cookies(url: &str, headless: bool) -> Result<Brows
 
 
 
+    Log::info("browser session ready: reason=login".to_string());
     Ok(BrowserSession {
         tab: Some(tab),
-        browser: Some(browser),
+        browser: Some(logged_browser),
     })
 }
 pub fn scroll_to_bottom(session: &BrowserSession) -> Result<()> {

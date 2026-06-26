@@ -55,11 +55,15 @@ async fn main_loop(usernames: Vec<String>, config: Config) -> Result<()> {
     ));
 
     let t0 = Instant::now();
-    Log::dev(format!(
-        "[main_loop] launching browser (headless={})",
-        is_headless()
+    let headless = is_headless();
+    Log::info(format!(
+        "poll work starting: accounts={user_count} download_fav={} headless={headless}",
+        config.download_fav
     ));
-    let session = launch_browser_with_cookies("https://www.tiktok.com", is_headless())?;
+    Log::dev(format!(
+        "[main_loop] launching browser (headless={headless})"
+    ));
+    let session = launch_browser_with_cookies("https://www.tiktok.com", headless)?;
     Log::dev(format!(
         "[main_loop] browser ready ({}ms)",
         t0.elapsed().as_millis()
@@ -119,6 +123,10 @@ async fn main_loop(usernames: Vec<String>, config: Config) -> Result<()> {
         t0.elapsed().as_millis()
     ));
     Log::console("Done".to_string());
+    Log::info(format!(
+        "poll work finished: accounts={user_count} elapsed_ms={}",
+        loop_start.elapsed().as_millis()
+    ));
     Log::dev(format!(
         "[main_loop] complete ({}ms total)",
         loop_start.elapsed().as_millis()
@@ -132,6 +140,7 @@ pub async fn default_loop() {
     loop {
         let cycle_start = Instant::now();
         Log::console("Poll cycle".to_string());
+        Log::info("poll cycle starting".to_string());
         Log::dev("poll cycle start".to_string());
         let accounts = match load_tracked_accounts() {
             Ok(accounts) => accounts,
@@ -156,10 +165,18 @@ pub async fn default_loop() {
         if let Err(e) = main_loop(accounts, config).await {
             let detail = format!("main loop failed: {:#}", e);
             Log::error(detail.clone());
+            Log::info(format!(
+                "poll cycle failed: elapsed_ms={} error={detail}",
+                cycle_start.elapsed().as_millis()
+            ));
             Log::console(format!("Poll cycle failed: {e:#}"));
             maybe_critical_fail_on_poll_error(&detail);
         } else {
             record_poll_success();
+            Log::info(format!(
+                "poll cycle succeeded: elapsed_ms={}",
+                cycle_start.elapsed().as_millis()
+            ));
         }
         Log::dev_timing("poll_cycle", cycle_start);
         timeout(5 * 60, LogLevel::Console).await;

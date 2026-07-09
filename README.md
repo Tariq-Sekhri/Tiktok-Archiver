@@ -1,11 +1,18 @@
 ## Tiktok Archiver
-Minimal TikTok account watcher and downloader written in Rust.
+Minimal TikTok account watcher and downloader written in Rust (v1.1.0).
 It watches configured TikTok accounts, keeps a JSON state of seen videos, and downloads missing videos using `yt-dlp`, while logging activity to level-specific log files under `state/`.
 
 **[Setup Guide Video](https://www.youtube.com/watch?v=3Ewcy7WfzaA)** — Watch this for a walkthrough of the installation and configuration process.
 
 ### Requirements
 - Rust toolchain (edition 2021)
+- Google Chrome (used via `headless_chrome` for profile scraping)
+- Windows (the app downloads `yt-dlp.exe`, uses Windows process flags, and shows native alerts on critical failure)
+
+`yt-dlp` is downloaded automatically into `state/` on first run if it is not already present.
+
+### Install from release
+Pre-built Windows executables are published on every push to `master` via GitHub Actions. Download the latest `.exe` from the [Releases](https://github.com/Tariq-Sekhri/Tiktok-Archiver/releases) page, place `config.yaml` next to it, and run it directly. State files are created in a `state/` folder beside the executable.
 
 ### First‑time setup
 1. **Build**
@@ -13,7 +20,9 @@ It watches configured TikTok accounts, keeps a JSON state of seen videos, and do
 cargo build
 ```
 2. **Choose accounts and (optionally) download directory**
-After the first run, a `config.yaml` file is created next to the executable. Edit it to set your accounts and download directory:
+
+`config.yaml` is created on first run. When using `cargo run`, it lives in the project root; when running a release binary, it lives next to the executable.
+
 ```bash
 cargo run
 ```
@@ -45,23 +54,49 @@ Run the default mode (poll + download):
 ```bash
 cargo run
 ```
-The app will:
-- Periodically query TikTok for each tracked account's video count
-- Discover new videos via a browser session when counts increase
-- Append new videos into `state/seen_videos.json`
-- Download any pending videos to `<download_dir>/<username>/<video_id>.mp4` (or `<download_dir>/favs/` when `download_fav` is enabled)
-- Maintain derived state for each account in `state/accounts.json`
+
+Debug mode — visible browser window and verbose tracing to stderr:
+```bash
+cargo run dev
+```
+
+Each poll cycle:
+- Launches a headless Chrome session (visible in `dev` mode) using saved cookies
+- Visits each tracked account’s profile, scrolls until no new video IDs appear, and parses links from the page HTML
+- Optionally checks the signed‑in account’s Favorites tab when `download_fav` is enabled
+- Appends newly discovered videos into `state/seen_videos.json`
+- Downloads any pending videos to `<download_dir>/<username>/<video_id>.mp4` (or `<download_dir>/favs/` for favorites)
+- Waits 5 minutes, then repeats
+
+Downloads retry up to 5 times per video; after that the video is marked unavailable and skipped.
+
+If every poll cycle fails 5 times in a row, the process exits with a critical failure.
+
+### Running in the background (PM2)
+`ecosystem.config.cjs` is included for running the release binary under [PM2](https://pm2.keymetrics.io/):
+
+```bash
+cargo build --release
+pm2 start ecosystem.config.cjs
+```
+
+PM2 stdout/stderr are written to `state/pm2-out.log` and `state/pm2-error.log`. On critical failure the app shows a Windows message box (useful when no terminal is attached). Set `TTA_SILENT_CRIT_ALERT=1` to suppress the popup.
 
 ### State files
-All persistent state lives under the `state` directory created in the project root:
-- `saved_cookies.json`: TikTok cookies captured during `cargo run login`
-- `accounts.json`: per‑account counts, diffs, and unavailable counts
-- `seen_videos.json`: per‑account list of discovered videos and download status
+All persistent state lives under `state/` (project root when using `cargo run`, or beside the executable for release builds):
+
+- `saved_cookies.json`: TikTok cookies captured during login
+- `seen_videos.json`: per‑account (and `favorite`) lists of discovered videos and download status
+- `poll_health.json`: consecutive poll-failure tracking
+- `ytdlp_cookies.txt`: cookie jar passed to `yt-dlp` at download time
+- `yt-dlp.exe`: auto-downloaded downloader binary
+- `tiktok_profile/`: persistent Chrome user profile used for scraping
 - `info.log`: routine operational events
 - `error.log`: recoverable failures (poll, download, discovery)
 - `criticalfail.log`: unrecoverable failures that stop the process
 
 ### Troubleshooting
 - If you see messages about missing cookies or config, follow the printed instructions in the terminal and rerun `cargo run login` or fix `config.yaml`.
-- If `yt-dlp` fails, check `state/error.log` and verify:
-  - Your cookies are still valid (repeat the login flow if needed)
+- If `yt-dlp` fails, check `state/error.log` and verify your cookies are still valid (repeat the login flow if needed).
+- If polls keep failing, check `state/poll_health.json` and `state/error.log` for the last error, fix the underlying issue, and restart.
+- For browser or login issues, try `cargo run dev` to watch what Chrome is doing, or `cargo run login` to refresh cookies.

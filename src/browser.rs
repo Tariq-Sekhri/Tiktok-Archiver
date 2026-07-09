@@ -569,11 +569,16 @@ fn build_launch_options(headless: bool, profile_dir: Option<PathBuf>) -> Result<
     builder.window_size(Some((1920, 1080)));
     builder.idle_browser_timeout(Duration::from_secs(3600));
     builder.user_data_dir(profile_dir);
-    builder.args(vec![
+    let mut chrome_args = vec![
         OsStr::new("--disable-blink-features=AutomationControlled"),
         OsStr::new("--disable-infobars"),
         OsStr::new("--no-sandbox"),
-    ]);
+    ];
+    if headless {
+        #[cfg(windows)]
+        chrome_args.push(OsStr::new("--window-position=-10000,-10000"));
+    }
+    builder.args(chrome_args);
     builder.ignore_default_args(vec![OsStr::new("--enable-automation")]);
     builder
         .build()

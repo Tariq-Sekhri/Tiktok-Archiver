@@ -2,6 +2,7 @@
 pub mod logger;
 pub mod config;
 pub mod critical_alert;
+pub mod critical_recovery;
 pub mod poll_health;
 pub mod video;
 

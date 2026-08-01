@@ -70,7 +70,7 @@ Each poll cycle:
 
 Downloads retry up to 5 times per video; after that the video is marked unavailable and skipped.
 
-If every poll cycle fails 5 times in a row, the process exits with a critical failure.
+If every poll cycle fails 5 times in a row, the critical failure is first recorded durably and the Chrome processes using this archiver's `state/tiktok_profile` are terminated. The process then exits so PM2 can restart it. If another critical failure occurs before a successful poll, the app also shows a Windows critical-error message.
 
 ### Running in the background (PM2)
 `ecosystem.config.cjs` is included for running the release binary under [PM2](https://pm2.keymetrics.io/):
@@ -80,7 +80,7 @@ cargo build --release
 pm2 start ecosystem.config.cjs
 ```
 
-PM2 stdout/stderr are written to `state/pm2-out.log` and `state/pm2-error.log`. On critical failure the app shows a Windows message box (useful when no terminal is attached). Set `TTA_SILENT_CRIT_ALERT=1` to suppress the popup.
+PM2 stdout/stderr are written to `state/pm2-out.log` and `state/pm2-error.log`. Critical events are always recorded before a Windows message box is shown. Set `TTA_SILENT_CRIT_ALERT=1` to suppress the popup after the recovery retry.
 
 ### State files
 All persistent state lives under `state/` (project root when using `cargo run`, or beside the executable for release builds):
@@ -94,9 +94,13 @@ All persistent state lives under `state/` (project root when using `cargo run`, 
 - `info.log`: routine operational events
 - `error.log`: recoverable failures (poll, download, discovery)
 - `criticalfail.log`: unrecoverable failures that stop the process
+- `critical_recovery.json`: whether a Chrome-recovery attempt is awaiting a successful poll
+- `diagnostic.log`: detailed lifecycle, timing, browser, discovery, and download diagnostics; it is recorded in normal background operation too
+
+Logs append continuously and are never rotated automatically. Critical records are synced before exit; logging failures are sent to stderr so PM2 captures them instead of being silently discarded.
 
 ### Troubleshooting
 - If you see messages about missing cookies or config, follow the printed instructions in the terminal and rerun `cargo run login` or fix `config.yaml`.
 - If `yt-dlp` fails, check `state/error.log` and verify your cookies are still valid (repeat the login flow if needed).
-- If polls keep failing, check `state/poll_health.json` and `state/error.log` for the last error, fix the underlying issue, and restart.
+- If polls keep failing, check `state/poll_health.json`, `state/error.log`, and `state/criticalfail.log` for the last error, fix the underlying issue, and restart.
 - For browser or login issues, try `cargo run dev` to watch what Chrome is doing, or `cargo run login` to refresh cookies.

@@ -5,7 +5,7 @@ use anyhow::Result;
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
-use crate::db::{atomic_write_text, ensure_file, logger::Log, state_dir};
+use crate::db::{atomic_write_text, critical_recovery, ensure_file, logger::Log, state_dir};
 
 const SUSTAINED_FAILURE_COUNT: u64 = 5;
 
@@ -42,6 +42,7 @@ fn save(state: &PollHealth) -> Result<()> {
 
 pub fn record_poll_success() {
     let _ = save(&PollHealth::default());
+    critical_recovery::record_poll_success();
 }
 
 fn record_poll_failure(error: &str) -> Option<String> {
@@ -68,6 +69,6 @@ fn record_poll_failure(error: &str) -> Option<String> {
 
 pub fn maybe_critical_fail_on_poll_error(error: &str) {
     if let Some(message) = record_poll_failure(error) {
-        Log::critical_fail(message);
+        Log::critical_poll_fail(message);
     }
 }

@@ -13,11 +13,19 @@ use crate::{
     download::download_pending,
 };
 use anyhow::Result;
+use rand::seq::SliceRandom;
 use std::{
     io::{self, IsTerminal, Write},
     time::{Duration, Instant},
 };
 use tokio::time::sleep;
+
+fn is_tiktok_access_denied(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    detail.contains("err_http_response_code_failure")
+        || detail.contains("tiktok access denied")
+        || detail.contains("verification required")
+}
 
 pub async fn timeout(wait_secs: u16, level: LogLevel) {
     if !io::stdout().is_terminal() || level == LogLevel::Dev {
@@ -69,6 +77,22 @@ async fn main_loop(usernames: Vec<String>, config: Config) -> Result<()> {
         t0.elapsed().as_millis()
     ));
 
+    if config.download_fav {
+        let t0 = Instant::now();
+        Log::console("Favorites".to_string());
+        Log::dev("[main_loop] favorites fetch starting (first work item)".to_string());
+        if let Err(e) = fetch_new_fav(&session, &mut seen) {
+            Log::error(format!("favorites fetch failed: {:#}", e));
+            Log::console(format!("Favorites — failed: {e:#}"));
+        }
+        Log::dev(format!(
+            "[main_loop] favorites fetch finished ({}ms)",
+            t0.elapsed().as_millis()
+        ));
+    } else {
+        Log::dev("[main_loop] favorites fetch skipped (download_fav=false)".to_string());
+    }
+
     for (index, username) in usernames.iter().enumerate() {
         let user_start = Instant::now();
         Log::console(format!("@{username}"));
@@ -79,8 +103,14 @@ async fn main_loop(usernames: Vec<String>, config: Config) -> Result<()> {
             username
         ));
         if let Err(e) = fetch_new_videos(username, &session, &mut seen).await {
-            Log::error(format!("@{username} fetch failed: {:#}", e));
+            let detail = format!("@{username} fetch failed: {:#}", e);
+            Log::error(detail.clone());
             Log::console(format!("@{username} — failed: {e:#}"));
+            if is_tiktok_access_denied(&detail) {
+                return Err(anyhow::anyhow!(
+                    "TikTok denied the shared browser session while fetching @{username}: {e:#}"
+                ));
+            }
         }
         Log::dev(format!(
             "[main_loop] user {}/{}: @{} — fetch finished ({}ms)",
@@ -96,22 +126,6 @@ async fn main_loop(usernames: Vec<String>, config: Config) -> Result<()> {
             username
         ));
         timeout(20, Console).await;
-    }
-
-    if config.download_fav {
-        let t0 = Instant::now();
-        Log::console("Favorites".to_string());
-        Log::dev("[main_loop] favorites fetch starting".to_string());
-        if let Err(e) = fetch_new_fav(&session, &mut seen) {
-            Log::error(format!("favorites fetch failed: {:#}", e));
-            Log::console(format!("Favorites — failed: {e:#}"));
-        }
-        Log::dev(format!(
-            "[main_loop] favorites fetch finished ({}ms)",
-            t0.elapsed().as_millis()
-        ));
-    } else {
-        Log::dev("[main_loop] favorites fetch skipped (download_fav=false)".to_string());
     }
 
     let t0 = Instant::now();
@@ -152,6 +166,16 @@ pub async fn default_loop() {
                 continue;
             }
         };
+        let mut accounts = accounts;
+        accounts.shuffle(&mut rand::rng());
+        Log::dev(format!(
+            "poll account order: {}",
+            accounts
+                .iter()
+                .map(|username| format!("@{username}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
         let config = match load_config() {
             Ok(c) => c,
             Err(e) => {
@@ -170,7 +194,13 @@ pub async fn default_loop() {
                 cycle_start.elapsed().as_millis()
             ));
             Log::console(format!("Poll cycle failed: {e:#}"));
-            maybe_critical_fail_on_poll_error(&detail);
+            if is_tiktok_access_denied(&detail) {
+                Log::critical_tiktok_access_denied(format!(
+                    "TikTok denied this browser session (HTTP 403 / response-code failure). Polling stopped after the first rejected request. Complete TikTok verification or refresh the signed-in session before restarting.\n\nLast error:\n{detail}"
+                ));
+            } else {
+                maybe_critical_fail_on_poll_error(&detail);
+            }
         } else {
             record_poll_success();
             Log::info(format!(

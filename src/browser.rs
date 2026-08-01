@@ -1,10 +1,31 @@
 //v0
+use crate::db::{
+    atomic_write_text, ensure_file,
+    logger::{dev_mode_enabled, Log},
+    state_dir,
+};
 use anyhow::{anyhow, Context, Result};
-use headless_chrome::{browser, Browser, protocol::cdp::Network::{Cookie, CookieParam, CookieSameSite, SetCookies}};
-use std::{collections::HashSet, ffi::OsStr, fs, path::PathBuf, sync::Arc, time::{Duration, Instant}};
-use crate::db::{atomic_write_text, ensure_file, logger::{dev_mode_enabled, Log}, state_dir};
+use headless_chrome::{
+    browser,
+    protocol::cdp::Network::{Cookie, CookieParam, CookieSameSite, SetCookies},
+    Browser,
+};
+use std::{
+    collections::HashSet,
+    ffi::OsStr,
+    fs,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
-const SESSION_COOKIE_NAMES: &[&str] = &["sid_tt", "sessionid", "sid_guard", "uid_tt", "tt_session_tlb_tag"];
+const SESSION_COOKIE_NAMES: &[&str] = &[
+    "sid_tt",
+    "sessionid",
+    "sid_guard",
+    "uid_tt",
+    "tt_session_tlb_tag",
+];
 
 struct LoggedBrowser {
     browser: Browser,
@@ -74,16 +95,13 @@ impl BrowserSession {
     }
 }
 //v1
-pub fn is_headless()->bool{
+pub fn is_headless() -> bool {
     if cfg!(debug_assertions) || dev_mode_enabled() {
         false
-    }else{
+    } else {
         true
     }
-
 }
-
-
 
 //v1
 pub fn navigate_to_fav(session: &BrowserSession) -> Result<()> {
@@ -258,7 +276,11 @@ pub fn clear_tiktok_profile() -> Result<()> {
     Ok(())
 }
 //v0
-fn inject_cookies(tab: &headless_chrome::Tab, params: Vec<CookieParam>, cookie_url: &str) -> Result<()> {
+fn inject_cookies(
+    tab: &headless_chrome::Tab,
+    params: Vec<CookieParam>,
+    cookie_url: &str,
+) -> Result<()> {
     if params.is_empty() {
         return Ok(());
     }
@@ -303,8 +325,11 @@ fn inject_cookies(tab: &headless_chrome::Tab, params: Vec<CookieParam>, cookie_u
 pub fn load_cookie_params() -> Result<Vec<CookieParam>> {
     let path = cookies_path()?;
     let content = fs::read_to_string(&path)?;
-    let data: serde_json::Value =  serde_json::from_str(&content)?;
-    let cookies = data.get("cookies").and_then(|c| c.as_array()).ok_or(anyhow!("error getting cookies"))?;
+    let data: serde_json::Value = serde_json::from_str(&content)?;
+    let cookies = data
+        .get("cookies")
+        .and_then(|c| c.as_array())
+        .ok_or(anyhow!("error getting cookies"))?;
     let mut params = Vec::new();
     for c in cookies {
         if !is_tiktok_cookie_entry(c) {
@@ -331,18 +356,14 @@ pub fn load_cookie_params() -> Result<Vec<CookieParam>> {
         let same_site = parse_same_site(c);
         let expires = parse_expires(c);
         params.push(build_cookie_param(
-            name,
-            value,
-            domain,
-            path,
-            secure,
-            http_only,
-            same_site,
-            expires,
+            name, value, domain, path, secure, http_only, same_site, expires,
         ));
     }
     if params.is_empty() {
-        Log::dev(format!("  [Load Cookies] No tiktok.com cookies in {}", path));
+        Log::dev(format!(
+            "  [Load Cookies] No tiktok.com cookies in {}",
+            path
+        ));
         Log::dev(format!(
             "  [Load Cookies] run `cargo run` once to save your cookies (or `cargo run login` to swap accounts): {}",
             path
@@ -388,7 +409,7 @@ pub fn write_ytdlp_cookie_jar(params: &[CookieParam]) -> Result<PathBuf> {
     Ok(path)
 }
 //v0
-pub fn save_cookies(cookies: &[CookieParam])->Result<()> {
+pub fn save_cookies(cookies: &[CookieParam]) -> Result<()> {
     let path = cookies_path()?;
 
     let cookies_json: Vec<serde_json::Value> = cookies
@@ -475,7 +496,10 @@ pub fn log_auth_storage_status() {
         }
     ));
 
-    let alt = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target").join("release").join("../state");
+    let alt = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../target")
+        .join("release")
+        .join("../state");
     if alt.exists() && alt != dir {
         Log::dev(format!(
             "[auth] WARNING: ignored duplicate state at {} (release build leftover)",
@@ -557,7 +581,10 @@ fn launch_opts_summary(opts: &browser::LaunchOptions) -> String {
     )
 }
 
-fn build_launch_options(headless: bool, profile_dir: Option<PathBuf>) -> Result<browser::LaunchOptions<'static>> {
+fn build_launch_options(
+    headless: bool,
+    profile_dir: Option<PathBuf>,
+) -> Result<browser::LaunchOptions<'static>> {
     let chrome_path = resolve_chrome_path()?;
     Log::dev(format!(
         "[Browser] chrome binary: {}",
@@ -580,14 +607,13 @@ fn build_launch_options(headless: bool, profile_dir: Option<PathBuf>) -> Result<
     }
     builder.args(chrome_args);
     builder.ignore_default_args(vec![OsStr::new("--enable-automation")]);
-    builder
-        .build()
-        .context("invalid browser launch options")
+    builder.build().context("invalid browser launch options")
 }
 
 pub fn launch_browser_with_cookies(url: &str, headless: bool) -> Result<BrowserSession> {
     let cookie_params = load_cookie_params()?;
     let profile_path = tiktok_profile_path();
+    let profile_has_browser_state = profile_path.join("Default").exists();
     Log::dev("browser: launch".to_string());
     fs::create_dir_all(&profile_path)?;
     let profile_dir = Some(profile_path.clone());
@@ -615,10 +641,17 @@ pub fn launch_browser_with_cookies(url: &str, headless: bool) -> Result<BrowserS
         .inner()
         .new_tab()
         .context("Failed to open new browser tab for TikTok session")?;
-    tab.set_user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36", Some("en-US,en;q=0.9"), None)
-        .context("Failed to set TikTok user agent on tab")?;
-
-    let inject_from_file = !cookie_params.is_empty();
+    // Prefer the persistent Chrome profile created by the interactive login.
+    // Cookie reinjection is only a compatibility fallback for legacy state.
+    let inject_from_file = !cookie_params.is_empty() && !profile_has_browser_state;
+    Log::dev(format!(
+        "[Browser] auth source: {}",
+        if inject_from_file {
+            "legacy saved-cookie fallback"
+        } else {
+            "persistent Chrome profile"
+        }
+    ));
     if inject_from_file {
         tab.navigate_to(url)
             .with_context(|| format!("Failed to navigate to {} before cookie injection", url))?;
@@ -628,9 +661,8 @@ pub fn launch_browser_with_cookies(url: &str, headless: bool) -> Result<BrowserS
         inject_cookies(&tab, cookie_params, url)?;
         tab.navigate_to(url)
             .with_context(|| format!("Failed to navigate to {} after cookie injection", url))?;
-        tab.wait_until_navigated().with_context(|| {
-            format!("Timed out waiting for {} after cookie injection", url)
-        })?;
+        tab.wait_until_navigated()
+            .with_context(|| format!("Timed out waiting for {} after cookie injection", url))?;
     } else {
         tab.navigate_to(url)
             .with_context(|| format!("Failed to navigate TikTok tab to URL: {}", url))
@@ -644,7 +676,9 @@ pub fn launch_browser_with_cookies(url: &str, headless: bool) -> Result<BrowserS
 
     std::thread::sleep(Duration::from_secs(2));
 
-    if  inject_from_file {
+    reject_tiktok_block_or_validation_page(&tab)?;
+
+    if inject_from_file {
         let applied = tab.get_cookies().context("get_cookies after launch")?;
         if !has_session_cookie(&applied) {
             return Err(anyhow!(
@@ -670,7 +704,8 @@ pub fn launch_browser_without_cookies(url: &str, headless: bool) -> Result<Brows
     ));
 
     let profile_path = tiktok_profile_path();
-    let launch_opts = build_launch_options(headless, None)?;
+    fs::create_dir_all(&profile_path)?;
+    let launch_opts = build_launch_options(headless, Some(profile_path.clone()))?;
 
     let logged_browser = LoggedBrowser::launch(
         launch_opts,
@@ -684,22 +719,16 @@ pub fn launch_browser_without_cookies(url: &str, headless: bool) -> Result<Brows
         .inner()
         .new_tab()
         .context("Failed to open new browser tab for TikTok session")?;
-    tab.set_user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36", Some("en-US,en;q=0.9"), None)
-        .context("Failed to set TikTok user agent on tab")?;
-
-
-        tab.navigate_to(url)
-            .with_context(|| format!("Failed to navigate TikTok tab to URL: {}", url))
-            .map_err(|e| {
-                Log::dev(format!("[Browser] navigate_to error for {}: {:#}", url, e));
-                e
-            })?;
-        tab.wait_until_navigated()
-            .with_context(|| format!("Timed out waiting for navigation to {}", url))?;
+    tab.navigate_to(url)
+        .with_context(|| format!("Failed to navigate TikTok tab to URL: {}", url))
+        .map_err(|e| {
+            Log::dev(format!("[Browser] navigate_to error for {}: {:#}", url, e));
+            e
+        })?;
+    tab.wait_until_navigated()
+        .with_context(|| format!("Timed out waiting for navigation to {}", url))?;
 
     std::thread::sleep(Duration::from_secs(2));
-
-
 
     Log::info("browser session ready: reason=login".to_string());
     Ok(BrowserSession {
@@ -741,10 +770,10 @@ pub fn scroll_to_bottom(session: &BrowserSession) -> Result<()> {
     Ok(())
 }
 pub fn scroll_x_times(x: u32, session: &BrowserSession) -> Result<()> {
-        let mut loop_count = 0;
+    let mut loop_count = 0;
     loop {
-        if loop_count > x{
-            return Ok(())
+        if loop_count > x {
+            return Ok(());
         }
         let reached_end: bool = session
             .tab()?
@@ -777,7 +806,27 @@ pub fn scroll_x_times(x: u32, session: &BrowserSession) -> Result<()> {
             std::thread::sleep(Duration::from_millis(500));
             break;
         }
-        loop_count+=1;
+        loop_count += 1;
+    }
+    Ok(())
+}
+
+fn reject_tiktok_block_or_validation_page(tab: &headless_chrome::Tab) -> Result<()> {
+    let html = tab
+        .get_content()
+        .context("failed to inspect the initial TikTok page for an access block")?;
+    let page = html.to_ascii_lowercase();
+    let markers = [
+        "access to www.tiktok.com was denied",
+        "http error 403",
+        "verify to continue",
+        "captcha challenge",
+        "security verification",
+    ];
+    if let Some(marker) = markers.iter().find(|marker| page.contains(**marker)) {
+        return Err(anyhow!(
+            "TikTok access denied or verification required (page marker: {marker})"
+        ));
     }
     Ok(())
 }

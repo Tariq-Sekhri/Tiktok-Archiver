@@ -123,7 +123,7 @@ pub async fn fetch_new_videos(
     session: &BrowserSession,
     seen: &mut HashMap<String, Vec<Video>>,
 ) -> Result<()> {
-    let profile_url = format!("https://www.tiktok.com/@{}", username);
+    let profile_url = format!("https://www.tiktok.com/@{username}?lang=en");
     Log::dev(format!("[@{username}] navigating to {profile_url}"));
     let t0 = Instant::now();
     session.tab()?.navigate_to(profile_url.as_str())?;

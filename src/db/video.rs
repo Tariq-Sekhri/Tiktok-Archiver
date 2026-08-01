@@ -6,6 +6,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::db::{atomic_write_text, ensure_file, state_dir};
 use crate::db::config::load_config;
 use crate::db::logger::Log;
+use crate::db::critical_alert::alert_download_unavailable;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy)]
 pub enum DownloadStatus {
@@ -101,17 +102,7 @@ impl Video {
 
         Ok(PathBuf::from(load_config()?.download_dir).join(folder).join(format!("{}.{}", self.id, VIDEO_EXT )))
     }
-    pub fn other_file_path(&self)->Result<PathBuf>{
-        let folder = if self.is_fav {
-            "favs"
-        } else {
-            &self.username
-        };
-
-        Ok(PathBuf::from(load_config()?.download_dir).join(folder).join(format!("{}.{}", self.id, VIDEO_EXT )))
-    }
-
-    pub fn download_failed(&mut self, _e: &Error) {
+    pub fn download_failed(&mut self, e: &Error) {
         self.download_status = match self.download_status {
             DownloadStatus::Downloaded => {
                 Log::critical_fail("download failed on a video already download??".to_string())
@@ -122,6 +113,12 @@ impl Video {
         if let DownloadStatus::DownloadFailed(n) = self.download_status {
             if n >= 5 {
                 self.source_available = false;
+                let message = format!(
+                    "Video {} from @{} failed to download {} times and has been paused.\n\nLast yt-dlp error:\n{:#}\n\nSee state/error.log. Re-enable it after fixing the source/session issue.",
+                    self.id, self.username, n, e
+                );
+                Log::error(message.clone());
+                alert_download_unavailable(&message);
             }
         }
     }

@@ -23,6 +23,11 @@ pub fn alert_critical_failure(message: &str) {
     unix_try_notify(&body);
 }
 
+/// Show a non-fatal user alert for a video that has exhausted its retry budget.
+pub fn alert_download_unavailable(message: &str) {
+    alert_critical_failure(message);
+}
+
 #[cfg(windows)]
 fn windows_message_box(body: &str) {
     let title = "Tiktok-Archiver — critical failure (PM2 / background)";

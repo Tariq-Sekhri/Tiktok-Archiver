@@ -77,15 +77,43 @@ pub fn download_video(vid: &Video) -> Result<()> {
         Log::info(format!("Video {} already on disk", vid.id));
         return Ok(());
     }
-    if vid.other_file_path()?.exists() {
-        Log::info(format!("Video {} linked from existing file", vid.id));
-        return Ok(fs::hard_link(&vid.other_file_path()?, &vid.file_path()?)?);
+    if let Some(existing_path) = existing_video_path(vid)? {
+        if let Some(parent) = file_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        Log::info(format!(
+            "Video {} linked from existing file: {}",
+            vid.id,
+            existing_path.display()
+        ));
+        return Ok(fs::hard_link(existing_path, file_path)?);
     }
     Log::dev(format!("[download] video {}: running yt-dlp", vid.id));
     if let Some(parent) = vid.file_path()?.parent() {
         fs::create_dir_all(parent)?;
     }
     yt_dlp(vid)
+}
+
+/// A video may be discovered both from a profile and from Favorites. Reuse the
+/// already-downloaded media across those folders instead of issuing another
+/// TikTok request for the same globally unique video ID.
+fn existing_video_path(vid: &Video) -> Result<Option<std::path::PathBuf>> {
+    let download_root = std::path::PathBuf::from(crate::db::config::load_config()?.download_dir);
+    let target = vid.file_path()?;
+    let file_name = format!("{}.{}", vid.id, crate::db::video::VIDEO_EXT);
+
+    for entry in fs::read_dir(download_root)? {
+        let path = entry?.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let candidate = path.join(&file_name);
+        if candidate != target && candidate.is_file() {
+            return Ok(Some(candidate));
+        }
+    }
+    Ok(None)
 }
 
 fn yt_dlp(vid: &Video)->Result<()>{
@@ -96,6 +124,14 @@ fn yt_dlp(vid: &Video)->Result<()>{
         .arg(vid.file_path()?.to_str().unwrap_or(""))
         .arg("--merge-output-format")
         .arg("mp4")
+        // TikTok intermittently exposes a video before its extraction data is ready.
+        // Retry known extractor failures with a short exponential backoff.
+        .arg("--extractor-retries")
+        .arg("5")
+        .arg("--retry-sleep")
+        .arg("extractor:exp=1:8")
+        .arg("--sleep-requests")
+        .arg("1")
         .arg("--no-warnings");
     if !cookie_params.is_empty() {
         let jar = write_ytdlp_cookie_jar(&cookie_params)?;

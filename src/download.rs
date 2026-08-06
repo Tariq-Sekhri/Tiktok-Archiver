@@ -53,7 +53,14 @@ fn download_videos(seen_vids: &mut HashMap<String, Vec<Video>>) -> Result<()> {
                     .get_mut(&user)
                     .unwrap()[vid_index]
                     .download_failed(&e);
-                Log::error(format!("download {} failed: {:#}", snapshot.id, e));
+                Log::error(format!(
+                    "download {} failed (with and without cookies): {:#}",
+                    snapshot.id, e
+                ));
+                Log::console(format!(
+                    "Video {} — download failed, will retry next cycle",
+                    snapshot.id
+                ));
                 Log::dev(format!(
                     "[download] {}/{}: video {} failed ({}ms): {}",
                     index + 1,
@@ -104,7 +111,25 @@ pub fn download_video(vid: &Video) -> Result<()> {
     if let Some(parent) = file_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    yt_dlp(vid)
+    let has_cookies = !load_cookie_params()?.is_empty();
+    if has_cookies {
+        Log::dev(format!("[download] video {}: yt-dlp with cookies", vid.id));
+        match yt_dlp(vid, true) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                Log::dev(format!(
+                    "[download] video {}: cookies attempt failed: {:#}",
+                    vid.id, e
+                ));
+                Log::info(format!(
+                    "Video {}: retrying download without cookies",
+                    vid.id
+                ));
+            }
+        }
+    }
+    Log::dev(format!("[download] video {}: yt-dlp without cookies", vid.id));
+    yt_dlp(vid, false)
 }
 
 fn link_video_to(source: PathBuf, target: PathBuf, id: i64) -> Result<()> {
@@ -182,8 +207,7 @@ fn propagate_hardlinks_for_id(seen_vids: &mut HashMap<String, Vec<Video>>, id: i
     Ok(())
 }
 
-fn yt_dlp(vid: &Video) -> Result<()> {
-    let cookie_params = load_cookie_params()?;
+fn yt_dlp(vid: &Video, use_cookies: bool) -> Result<()> {
     let ytdlp_path = resolve_executable_path("yt-dlp.exe");
     let mut cmd = Command::new(&ytdlp_path);
     cmd.arg("-o")
@@ -197,9 +221,12 @@ fn yt_dlp(vid: &Video) -> Result<()> {
         .arg("--sleep-requests")
         .arg("1")
         .arg("--no-warnings");
-    if !cookie_params.is_empty() {
-        let jar = write_ytdlp_cookie_jar(&cookie_params)?;
-        cmd.arg("--cookies").arg(jar);
+    if use_cookies {
+        let cookie_params = load_cookie_params()?;
+        if !cookie_params.is_empty() {
+            let jar = write_ytdlp_cookie_jar(&cookie_params)?;
+            cmd.arg("--cookies").arg(jar);
+        }
     }
     cmd.arg(&vid.url);
     #[cfg(windows)]
@@ -210,7 +237,8 @@ fn yt_dlp(vid: &Video) -> Result<()> {
         .map_err(|e| anyhow!(format!("Failed to execute yt-dlp: {}", e)))?;
 
     if output.status.success() {
-        Log::info(format!("Video {} downloaded", vid.id));
+        let via = if use_cookies { "cookies" } else { "no cookies" };
+        Log::info(format!("Video {} downloaded ({via})", vid.id));
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -231,7 +259,7 @@ mod test_download {
             id,
             username,
         );
-        assert_eq!(yt_dlp(&video).is_ok(), true);
+        assert_eq!(yt_dlp(&video, false).is_ok(), true);
         assert_eq!(video.file_path().unwrap().exists(), true);
     }
 }

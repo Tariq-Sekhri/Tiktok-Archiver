@@ -12,6 +12,12 @@ pub struct Config {
     pub download_dir: String,
     #[serde(default)]
     pub download_fav: bool,
+    #[serde(default = "default_poll_accounts")]
+    pub poll_accounts: bool,
+}
+
+fn default_poll_accounts() -> bool {
+    true
 }
 
 pub fn load_config()->Result<Config>{

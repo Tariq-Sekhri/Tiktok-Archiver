@@ -46,6 +46,7 @@ pub fn deserialize_download_date<'de, D>(    d: D,) -> std::result::Result<Optio
     }
 }
 pub const VIDEO_EXT: &str = "mp4";
+const MAX_DOWNLOAD_FAILURES: u8 = 2;
 
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
@@ -89,7 +90,7 @@ impl Video {
         match self.download_status {
             DownloadStatus::Downloaded => false,
             DownloadStatus::NotDownloaded => true,
-            DownloadStatus::DownloadFailed(failed_count) => failed_count < 5,
+            DownloadStatus::DownloadFailed(failed_count) => failed_count < MAX_DOWNLOAD_FAILURES,
         }
     }
 
@@ -111,7 +112,7 @@ impl Video {
             DownloadStatus::DownloadFailed(n) => DownloadStatus::DownloadFailed(n + 1),
         };
         if let DownloadStatus::DownloadFailed(n) = self.download_status {
-            if n >= 5 {
+            if n >= MAX_DOWNLOAD_FAILURES {
                 self.source_available = false;
                 let message = format!(
                     "Video {} from @{} failed to download {} times and has been paused.\n\nLast yt-dlp error:\n{:#}\n\nSee state/error.log. Re-enable it after fixing the source/session issue.",

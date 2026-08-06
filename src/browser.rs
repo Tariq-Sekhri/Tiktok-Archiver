@@ -1,6 +1,6 @@
 //v0
 use crate::db::{
-    atomic_write_text, ensure_file,
+    atomic_write_text, critical_recovery, ensure_file,
     logger::{dev_mode_enabled, Log},
     state_dir,
 };
@@ -15,9 +15,12 @@ use std::{
     ffi::OsStr,
     fs,
     path::PathBuf,
+    process::Command,
     sync::Arc,
     time::{Duration, Instant},
 };
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 const SESSION_COOKIE_NAMES: &[&str] = &[
     "sid_tt",
@@ -45,12 +48,35 @@ impl LoggedBrowser {
         url: &str,
     ) -> Result<Self> {
         let summary = launch_opts_summary(&opts);
-        let browser = Browser::new(opts).map_err(|e| {
-            Log::info(format!(
-                "browser launch failed: reason={reason} headless={headless} profile={profile} url={url} ({summary}): {e:#}"
-            ));
-            anyhow!("headless_chrome Browser::new failed ({summary}): {e:#}")
-        })?;
+        let browser = match Browser::new(opts.clone()) {
+            Ok(browser) => browser,
+            Err(e) => {
+                let err_str = format!("{e:#}");
+                Log::info(format!(
+                    "browser launch failed: reason={reason} headless={headless} profile={profile} url={url} ({summary}): {err_str}"
+                ));
+                if err_str.contains("no available ports between") {
+                    match critical_recovery::kill_archiver_chrome() {
+                        Ok(killed) => Log::info(format!(
+                            "port exhaustion on launch: killed {killed} stale Chrome process(es), retrying"
+                        )),
+                        Err(kill_err) => Log::error(format!(
+                            "port exhaustion on launch: failed to kill stale Chrome: {kill_err:#}"
+                        )),
+                    }
+                    std::thread::sleep(Duration::from_secs(1));
+                    Browser::new(opts).map_err(|retry_e| {
+                        anyhow!(
+                            "headless_chrome Browser::new failed after Chrome cleanup ({summary}): {retry_e:#}"
+                        )
+                    })?
+                } else {
+                    return Err(anyhow!(
+                        "headless_chrome Browser::new failed ({summary}): {err_str}"
+                    ));
+                }
+            }
+        };
         let pid = browser.get_process_id();
         let ws = browser.get_ws_url();
         Log::info(format!(
@@ -78,6 +104,15 @@ impl Drop for LoggedBrowser {
             "browser shutdown: pid={:?} headless={} profile={} reason={} url={} ws={}",
             self.pid, self.headless, self.profile, self.reason, self.url, ws
         ));
+        if let Some(pid) = self.pid {
+            #[cfg(windows)]
+            {
+                let mut cmd = Command::new("taskkill");
+                cmd.args(["/PID", &pid.to_string(), "/T", "/F"]);
+                cmd.creation_flags(0x08000000);
+                let _ = cmd.output();
+            }
+        }
     }
 }
 
@@ -600,6 +635,11 @@ fn build_launch_options(
         OsStr::new("--disable-blink-features=AutomationControlled"),
         OsStr::new("--disable-infobars"),
         OsStr::new("--no-sandbox"),
+        OsStr::new("--disable-background-networking"),
+        OsStr::new("--disable-preconnect"),
+        OsStr::new("--dns-prefetch-disable"),
+        OsStr::new("--disable-features=PrefetchPrivacyProxy,IpProtectionProxyOverride,IpProtectionIncognito,IpProtectionAuth"),
+        OsStr::new("--force-webrtc-ip-handling-policy=disable_non_proxied_udp"),
     ];
     if headless {
         #[cfg(windows)]
@@ -613,7 +653,6 @@ fn build_launch_options(
 pub fn launch_browser_with_cookies(url: &str, headless: bool) -> Result<BrowserSession> {
     let cookie_params = load_cookie_params()?;
     let profile_path = tiktok_profile_path();
-    let profile_has_browser_state = profile_path.join("Default").exists();
     Log::dev("browser: launch".to_string());
     fs::create_dir_all(&profile_path)?;
     let profile_dir = Some(profile_path.clone());
@@ -641,17 +680,18 @@ pub fn launch_browser_with_cookies(url: &str, headless: bool) -> Result<BrowserS
         .inner()
         .new_tab()
         .context("Failed to open new browser tab for TikTok session")?;
-    // Prefer the persistent Chrome profile created by the interactive login.
-    // Cookie reinjection is only a compatibility fallback for legacy state.
-    let inject_from_file = !cookie_params.is_empty() && !profile_has_browser_state;
-    Log::dev(format!(
-        "[Browser] auth source: {}",
-        if inject_from_file {
-            "legacy saved-cookie fallback"
-        } else {
-            "persistent Chrome profile"
-        }
-    ));
+    tab.set_user_agent(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        Some("en-US,en;q=0.9"),
+        None,
+    )
+    .context("Failed to set TikTok user agent on tab")?;
+
+    // WARNING: Do not change cookie injection logic without extensive testing.
+    // TikTok auth is fragile; saved_cookies.json reinjection on every poll session
+    // is the known-good path. Preferring the Chrome profile alone has caused missed
+    // detections and stale sessions in production.
+    let inject_from_file = !cookie_params.is_empty();
     if inject_from_file {
         tab.navigate_to(url)
             .with_context(|| format!("Failed to navigate to {} before cookie injection", url))?;
@@ -675,8 +715,6 @@ pub fn launch_browser_with_cookies(url: &str, headless: bool) -> Result<BrowserS
     }
 
     std::thread::sleep(Duration::from_secs(2));
-
-    reject_tiktok_block_or_validation_page(&tab)?;
 
     if inject_from_file {
         let applied = tab.get_cookies().context("get_cookies after launch")?;
@@ -719,6 +757,12 @@ pub fn launch_browser_without_cookies(url: &str, headless: bool) -> Result<Brows
         .inner()
         .new_tab()
         .context("Failed to open new browser tab for TikTok session")?;
+    tab.set_user_agent(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        Some("en-US,en;q=0.9"),
+        None,
+    )
+    .context("Failed to set TikTok user agent on tab")?;
     tab.navigate_to(url)
         .with_context(|| format!("Failed to navigate TikTok tab to URL: {}", url))
         .map_err(|e| {
@@ -807,26 +851,6 @@ pub fn scroll_x_times(x: u32, session: &BrowserSession) -> Result<()> {
             break;
         }
         loop_count += 1;
-    }
-    Ok(())
-}
-
-fn reject_tiktok_block_or_validation_page(tab: &headless_chrome::Tab) -> Result<()> {
-    let html = tab
-        .get_content()
-        .context("failed to inspect the initial TikTok page for an access block")?;
-    let page = html.to_ascii_lowercase();
-    let markers = [
-        "access to www.tiktok.com was denied",
-        "http error 403",
-        "verify to continue",
-        "captcha challenge",
-        "security verification",
-    ];
-    if let Some(marker) = markers.iter().find(|marker| page.contains(**marker)) {
-        return Err(anyhow!(
-            "TikTok access denied or verification required (page marker: {marker})"
-        ));
     }
     Ok(())
 }

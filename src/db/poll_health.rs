@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::db::{atomic_write_text, critical_recovery, ensure_file, logger::Log, state_dir};
 
-const SUSTAINED_FAILURE_COUNT: u64 = 5;
+const SUSTAINED_FAILURE_COUNT: u64 = 2;
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct PollHealth {
@@ -45,6 +45,10 @@ pub fn record_poll_success() {
     critical_recovery::record_poll_success();
 }
 
+pub fn reset_poll_failures() {
+    let _ = save(&PollHealth::default());
+}
+
 fn record_poll_failure(error: &str) -> Option<String> {
     let mut state = load();
     if state.streak_started_at.is_none() {
@@ -60,15 +64,42 @@ fn record_poll_failure(error: &str) -> Option<String> {
     }
 
     Some(format!(
-        "Every poll cycle has failed {} times in a row (threshold is {}). Last error:\n{}\n\nSee state/error.log — fix the issue and restart.",
+        "Poll cycle errors occurred {} times in a row. Fix the issue (often: run login to refresh cookies), then dismiss this alert to resume.\n\nRecent errors:\n{}\n\nSee state/error.log for full details.",
         count,
-        SUSTAINED_FAILURE_COUNT,
         error
     ))
 }
 
-pub fn maybe_critical_fail_on_poll_error(error: &str) {
-    if let Some(message) = record_poll_failure(error) {
-        Log::critical_poll_fail(message);
+pub fn handle_poll_cycle_errors(errors: &[String]) {
+    if errors.is_empty() {
+        record_poll_success();
+        return;
     }
+
+    let combined = errors.join("\n\n");
+    if is_port_exhaustion_error(&combined) {
+        match critical_recovery::kill_archiver_chrome() {
+            Ok(killed) => {
+                Log::info(format!(
+                    "port exhaustion: killed {killed} stale Chrome process(es); failure streak reset"
+                ));
+            }
+            Err(e) => Log::error(format!("port exhaustion: failed to kill stale Chrome: {e:#}")),
+        }
+        reset_poll_failures();
+        return;
+    }
+
+    if let Some(message) = record_poll_failure(&combined) {
+        Log::pause_for_user_attention(message);
+        reset_poll_failures();
+    }
+}
+
+pub fn is_port_exhaustion_error(error: &str) -> bool {
+    error.contains("no available ports between")
+}
+
+pub fn maybe_critical_fail_on_poll_error(error: &str) {
+    handle_poll_cycle_errors(&[error.to_string()]);
 }

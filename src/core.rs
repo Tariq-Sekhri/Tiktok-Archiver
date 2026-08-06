@@ -7,7 +7,7 @@ use crate::{
     db::{
         config::{load_config, Config},
         logger::{Log, LogLevel},
-        poll_health::{maybe_critical_fail_on_poll_error, record_poll_success},
+        poll_health::{handle_poll_cycle_errors, maybe_critical_fail_on_poll_error},
         video::load_all,
     },
     download::download_pending,
@@ -20,11 +20,22 @@ use std::{
 };
 use tokio::time::sleep;
 
-fn is_tiktok_access_denied(detail: &str) -> bool {
-    let detail = detail.to_ascii_lowercase();
-    detail.contains("err_http_response_code_failure")
-        || detail.contains("tiktok access denied")
-        || detail.contains("verification required")
+async fn log_exit_country() {
+    match reqwest::get("https://ipapi.co/json/").await {
+        Ok(resp) if resp.status().is_success() => {
+            if let Ok(body) = resp.json::<serde_json::Value>().await {
+                let ip = body.get("ip").and_then(|v| v.as_str()).unwrap_or("?");
+                let country = body
+                    .get("country_code")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                let city = body.get("city").and_then(|v| v.as_str()).unwrap_or("?");
+                Log::info(format!("exit IP: {ip} ({country}, {city})"));
+            }
+        }
+        Ok(resp) => Log::dev(format!("exit IP check failed: http {}", resp.status())),
+        Err(e) => Log::dev(format!("exit IP check failed: {e:#}")),
+    }
 }
 
 pub async fn timeout(wait_secs: u16, level: LogLevel) {
@@ -41,10 +52,10 @@ pub async fn timeout(wait_secs: u16, level: LogLevel) {
     print!("\rdone.        \n");
 }
 
-//v1
-async fn main_loop(usernames: Vec<String>, config: Config) -> Result<()> {
+async fn main_loop(usernames: Vec<String>, config: Config) -> Result<(), Vec<String>> {
     let loop_start = Instant::now();
     let user_count = usernames.len();
+    let mut errors = Vec::new();
     Log::console(format!("Checking {} account(s)", user_count));
     Log::dev(format!(
         "[main_loop] start: {} account(s), download_fav={}",
@@ -53,7 +64,10 @@ async fn main_loop(usernames: Vec<String>, config: Config) -> Result<()> {
 
     let t0 = Instant::now();
     Log::dev("[main_loop] loading video database".to_string());
-    let mut seen = load_all()?;
+    let mut seen = match load_all() {
+        Ok(seen) => seen,
+        Err(e) => return Err(vec![format!("failed to load video database: {:#}", e)]),
+    };
     let tracked: usize = seen.values().map(|v| v.len()).sum();
     Log::dev(format!(
         "[main_loop] database loaded: {} users, {} videos ({}ms)",
@@ -71,7 +85,10 @@ async fn main_loop(usernames: Vec<String>, config: Config) -> Result<()> {
     Log::dev(format!(
         "[main_loop] launching browser (headless={headless})"
     ));
-    let session = launch_browser_with_cookies("https://www.tiktok.com", headless)?;
+    let session = match launch_browser_with_cookies("https://www.tiktok.com", headless) {
+        Ok(session) => session,
+        Err(e) => return Err(vec![format!("browser launch failed: {:#}", e)]),
+    };
     Log::dev(format!(
         "[main_loop] browser ready ({}ms)",
         t0.elapsed().as_millis()
@@ -82,8 +99,10 @@ async fn main_loop(usernames: Vec<String>, config: Config) -> Result<()> {
         Log::console("Favorites".to_string());
         Log::dev("[main_loop] favorites fetch starting (first work item)".to_string());
         if let Err(e) = fetch_new_fav(&session, &mut seen) {
-            Log::error(format!("favorites fetch failed: {:#}", e));
+            let detail = format!("favorites fetch failed: {:#}", e);
+            Log::error(detail.clone());
             Log::console(format!("Favorites — failed: {e:#}"));
+            errors.push(detail);
         }
         Log::dev(format!(
             "[main_loop] favorites fetch finished ({}ms)",
@@ -106,11 +125,7 @@ async fn main_loop(usernames: Vec<String>, config: Config) -> Result<()> {
             let detail = format!("@{username} fetch failed: {:#}", e);
             Log::error(detail.clone());
             Log::console(format!("@{username} — failed: {e:#}"));
-            if is_tiktok_access_denied(&detail) {
-                return Err(anyhow::anyhow!(
-                    "TikTok denied the shared browser session while fetching @{username}: {e:#}"
-                ));
-            }
+            errors.push(detail);
         }
         Log::dev(format!(
             "[main_loop] user {}/{}: @{} — fetch finished ({}ms)",
@@ -131,30 +146,39 @@ async fn main_loop(usernames: Vec<String>, config: Config) -> Result<()> {
     let t0 = Instant::now();
     Log::console("Downloading".to_string());
     Log::dev("[main_loop] download pending videos starting".to_string());
-    download_pending(&mut seen)?;
+    if let Err(e) = download_pending(&mut seen) {
+        let detail = format!("download pending failed: {:#}", e);
+        Log::error(detail.clone());
+        errors.push(detail);
+    }
     Log::dev(format!(
         "[main_loop] download pending finished ({}ms)",
         t0.elapsed().as_millis()
     ));
     Log::console("Done".to_string());
     Log::info(format!(
-        "poll work finished: accounts={user_count} elapsed_ms={}",
-        loop_start.elapsed().as_millis()
+        "poll work finished: accounts={user_count} elapsed_ms={} errors={}",
+        loop_start.elapsed().as_millis(),
+        errors.len()
     ));
     Log::dev(format!(
         "[main_loop] complete ({}ms total)",
         loop_start.elapsed().as_millis()
     ));
     Log::dev_timing("main_loop", loop_start);
-    Ok(())
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
 }
 
-//v1
 pub async fn default_loop() {
     loop {
         let cycle_start = Instant::now();
         Log::console("Poll cycle".to_string());
         Log::info("poll cycle starting".to_string());
+        log_exit_country().await;
         Log::dev("poll cycle start".to_string());
         let accounts = match load_tracked_accounts() {
             Ok(accounts) => accounts,
@@ -186,27 +210,23 @@ pub async fn default_loop() {
                 continue;
             }
         };
-        if let Err(e) = main_loop(accounts, config).await {
-            let detail = format!("main loop failed: {:#}", e);
-            Log::error(detail.clone());
-            Log::info(format!(
-                "poll cycle failed: elapsed_ms={} error={detail}",
-                cycle_start.elapsed().as_millis()
-            ));
-            Log::console(format!("Poll cycle failed: {e:#}"));
-            if is_tiktok_access_denied(&detail) {
-                Log::critical_tiktok_access_denied(format!(
-                    "TikTok denied this browser session (HTTP 403 / response-code failure). Polling stopped after the first rejected request. Complete TikTok verification or refresh the signed-in session before restarting.\n\nLast error:\n{detail}"
+        match main_loop(accounts, config).await {
+            Ok(()) => {
+                handle_poll_cycle_errors(&[]);
+                Log::info(format!(
+                    "poll cycle succeeded: elapsed_ms={}",
+                    cycle_start.elapsed().as_millis()
                 ));
-            } else {
-                maybe_critical_fail_on_poll_error(&detail);
             }
-        } else {
-            record_poll_success();
-            Log::info(format!(
-                "poll cycle succeeded: elapsed_ms={}",
-                cycle_start.elapsed().as_millis()
-            ));
+            Err(errors) => {
+                Log::info(format!(
+                    "poll cycle finished with {} error(s): elapsed_ms={}",
+                    errors.len(),
+                    cycle_start.elapsed().as_millis()
+                ));
+                Log::console(format!("Poll cycle had {} error(s)", errors.len()));
+                handle_poll_cycle_errors(&errors);
+            }
         }
         Log::dev_timing("poll_cycle", cycle_start);
         timeout(5 * 60, LogLevel::Console).await;

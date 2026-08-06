@@ -2,14 +2,42 @@ use chrono::NaiveDateTime;
 use std::cmp::PartialEq;
 use std::fmt;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process;
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 use crate::db::critical_alert::alert_critical_failure;
-use crate::db::{critical_recovery, state_dir};
+use crate::db::state_dir;
 use crate::DEV_MODE;
+
+fn attention_ack_path() -> PathBuf {
+    state_dir().join("attention_ack")
+}
+
+fn wait_for_attention_ack() {
+    let ack_path = attention_ack_path();
+    let _ = fs::remove_file(&ack_path);
+    if io::stdin().is_terminal() {
+        Log::console(
+            "Fix the issue above, then press Enter to resume polling.".to_string(),
+        );
+        let mut buf = String::new();
+        let _ = io::stdin().read_line(&mut buf);
+        return;
+    }
+    Log::info(
+        "Polling paused in background. Fix the issue, then create an empty state/attention_ack file or restart the archiver to resume.".to_string(),
+    );
+    loop {
+        if ack_path.is_file() {
+            let _ = fs::remove_file(&ack_path);
+            return;
+        }
+        std::thread::sleep(Duration::from_secs(30));
+    }
+}
 
 static LOG_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -62,37 +90,13 @@ impl Log {
         process::exit(1);
     }
 
-    /// Critical recovery is deliberately restricted to sustained poll failures.
-    pub fn critical_poll_fail(message: String) -> ! {
+    pub fn pause_for_user_attention(message: String) {
         Self::write_durable(message.clone(), LogLevel::CriticalFail);
-        match critical_recovery::recover_or_request_alert() {
-            Ok(true) => alert_critical_failure(&message),
-            Ok(false) => Self::info(
-                "critical failure recorded; killed archiver-owned Chrome. A repeat before a successful poll will show an alert".to_string(),
-            ),
-            Err(e) => {
-                eprintln!("[CriticalFail] recovery bookkeeping failed: {e:#}; showing alert to avoid a silent critical failure");
-                alert_critical_failure(&message);
-            }
-        }
-        process::exit(1);
-    }
-
-    /// TikTok explicitly denied the browser session. This needs immediate
-    /// user attention, rather than waiting for a second critical poll failure.
-    pub fn critical_tiktok_access_denied(message: String) -> ! {
-        Self::write_durable(message.clone(), LogLevel::CriticalFail);
-        if let Err(e) = critical_recovery::recover_or_request_alert() {
-            eprintln!("[CriticalFail] Chrome recovery failed after TikTok access denial: {e:#}");
-        }
         alert_critical_failure(&message);
-        Self::info("TikTok access denied: polling is suspended. Re-login or complete verification, then restart the archiver.".to_string());
-        loop {
-            std::thread::sleep(std::time::Duration::from_secs(60 * 60));
-        }
+        wait_for_attention_ack();
+        Self::info("Resuming polling after user acknowledgment.".to_string());
     }
 
-    // Diagnostic events are always persisted; stderr remains quiet outside dev mode.
     pub fn dev(message: String) {
         Self::write(message, LogLevel::Dev);
     }

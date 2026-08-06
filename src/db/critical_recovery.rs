@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 use crate::db::{atomic_write_text, ensure_file, state_dir};
 
@@ -16,30 +17,14 @@ fn state_path() -> PathBuf {
     state_dir().join("critical_recovery.json")
 }
 
-fn load() -> CriticalRecoveryState {
-    fs::File::open(state_path())
-        .ok()
-        .and_then(|file| serde_json::from_reader(file).ok())
-        .unwrap_or_default()
-}
-
 fn save(state: &CriticalRecoveryState) -> Result<()> {
     let path = state_path();
     ensure_file(&path, "{}")?;
     atomic_write_text(&path, &serde_json::to_string_pretty(state)?)
 }
 
-/// Returns true only when another critical failure occurs before a successful poll.
-pub fn recover_or_request_alert() -> Result<bool> {
-    if load().recovery_pending {
-        return Ok(true);
-    }
-    save(&CriticalRecoveryState {
-        recovery_pending: true,
-    })?;
-    let killed = kill_archiver_owned_chrome()?;
-    eprintln!("[CriticalRecovery] first critical failure: terminated {killed} Chrome process(es) using the archiver profile");
-    Ok(false)
+pub fn kill_archiver_chrome() -> Result<usize> {
+    kill_archiver_owned_chrome()
 }
 
 pub fn record_poll_success() {
@@ -57,9 +42,11 @@ pub fn record_poll_success() {
 fn kill_archiver_owned_chrome() -> Result<usize> {
     let profile = state_dir().join("tiktok_profile");
     let script = "$profile=$env:TTA_ARCHIVER_PROFILE; Get-CimInstance Win32_Process | Where-Object { $_.Name -ieq 'chrome.exe' -and $_.CommandLine -and $_.CommandLine.Contains($profile) } | Select-Object -ExpandProperty ProcessId";
-    let output = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .env("TTA_ARCHIVER_PROFILE", profile.as_os_str())
+    let mut output_cmd = Command::new("powershell.exe");
+    output_cmd.args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script]);
+    output_cmd.env("TTA_ARCHIVER_PROFILE", profile.as_os_str());
+    output_cmd.creation_flags(0x08000000);
+    let output = output_cmd
         .output()
         .context("failed to enumerate Chrome processes for critical recovery")?;
     if !output.status.success() {
@@ -73,8 +60,10 @@ fn kill_archiver_owned_chrome() -> Result<usize> {
         .filter_map(|line| line.trim().parse().ok())
         .collect();
     for pid in &pids {
-        let result = Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
+        let mut kill_cmd = Command::new("taskkill");
+        kill_cmd.args(["/PID", &pid.to_string(), "/T", "/F"]);
+        kill_cmd.creation_flags(0x08000000);
+        let result = kill_cmd
             .output()
             .with_context(|| format!("failed to terminate archiver-owned Chrome pid {pid}"))?;
         if !result.status.success() {

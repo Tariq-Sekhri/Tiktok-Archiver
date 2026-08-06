@@ -7,7 +7,10 @@ use crate::{
     db::{
         config::{load_config, Config},
         logger::{Log, LogLevel},
-        poll_health::{handle_poll_cycle_errors, maybe_critical_fail_on_poll_error},
+        poll_health::{
+            handle_poll_cycle_errors, is_tiktok_slow_down_error,
+            maybe_critical_fail_on_poll_error,
+        },
         video::load_all,
     },
     download::download_pending,
@@ -102,7 +105,14 @@ async fn main_loop(usernames: Vec<String>, config: Config) -> Result<(), Vec<Str
             let detail = format!("favorites fetch failed: {:#}", e);
             Log::error(detail.clone());
             Log::console(format!("Favorites — failed: {e:#}"));
-            errors.push(detail);
+            errors.push(detail.clone());
+            if is_tiktok_slow_down_error(&detail) {
+                Log::info(
+                    "TikTok slow-down (HTTP response failure): ending poll immediately".to_string(),
+                );
+                Log::console("Poll stopped — TikTok rate limit signal".to_string());
+                return Err(errors);
+            }
         }
         Log::dev(format!(
             "[main_loop] favorites fetch finished ({}ms)",
@@ -125,7 +135,16 @@ async fn main_loop(usernames: Vec<String>, config: Config) -> Result<(), Vec<Str
             let detail = format!("@{username} fetch failed: {:#}", e);
             Log::error(detail.clone());
             Log::console(format!("@{username} — failed: {e:#}"));
-            errors.push(detail);
+            errors.push(detail.clone());
+            if is_tiktok_slow_down_error(&detail) {
+                Log::info(format!(
+                    "TikTok slow-down (HTTP response failure) at @{username}: ending poll immediately"
+                ));
+                Log::console(format!(
+                    "@{username} — TikTok rate limit signal, stopping poll"
+                ));
+                return Err(errors);
+            }
         }
         Log::dev(format!(
             "[main_loop] user {}/{}: @{} — fetch finished ({}ms)",
@@ -224,7 +243,11 @@ pub async fn default_loop() {
                     errors.len(),
                     cycle_start.elapsed().as_millis()
                 ));
-                Log::console(format!("Poll cycle had {} error(s)", errors.len()));
+                Log::console(format!(
+                    "Poll cycle had {} error(s): {}",
+                    errors.len(),
+                    errors.first().map(String::as_str).unwrap_or("unknown")
+                ));
                 handle_poll_cycle_errors(&errors);
             }
         }

@@ -100,6 +100,12 @@ pub fn is_port_exhaustion_error(error: &str) -> bool {
     error.contains("no available ports between")
 }
 
+pub fn is_tiktok_slow_down_error(error: &str) -> bool {
+    error
+        .to_ascii_lowercase()
+        .contains("err_http_response_code_failure")
+}
+
 pub fn maybe_critical_fail_on_poll_error(error: &str) {
     handle_poll_cycle_errors(&[error.to_string()]);
 }
